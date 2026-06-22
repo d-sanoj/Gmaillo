@@ -211,9 +211,6 @@ struct ComposerView: View {
                     Text("Send")
                         .fontWeight(.semibold)
                         .padding(.horizontal, 18)
-                    Divider().frame(height: 26)
-                    Image(systemName: "chevron.down")
-                        .padding(.horizontal, 10)
                 }
                 .padding(.vertical, 8)
             }
