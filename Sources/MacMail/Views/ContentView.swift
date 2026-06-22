@@ -17,10 +17,17 @@ struct ContentView: View {
 
                 HSplitView {
                     ThreadListView(store: store)
-                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 350, maxHeight: .infinity)
+                        .frame(minWidth: 200, idealWidth: 280, maxWidth: 350, maxHeight: .infinity)
 
                     ReadingPaneView(store: store)
-                        .frame(minWidth: 460, idealWidth: 900, maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 300, idealWidth: 800, maxWidth: .infinity, maxHeight: .infinity)
+                }
+                
+                if store.isCalendarVisible {
+                    Divider()
+                    CalendarView(authService: store.oauthService, mailStore: store)
+                        .frame(width: 300)
+                        .transition(.move(edge: .trailing))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,7 +78,7 @@ struct ContentView: View {
             SettingsView(store: store)
         }
 
-        .alert("Gmaillo", isPresented: Binding(
+        .alert("MacMail", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
         )) {
@@ -94,7 +101,7 @@ struct ContentView: View {
                 await store.performBackgroundCheck()
             }
         }
-        .navigationTitle("Gmaillo")
+        .navigationTitle("MacMail")
     }
 }
 

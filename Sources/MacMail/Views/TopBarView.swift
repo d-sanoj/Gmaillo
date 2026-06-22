@@ -69,6 +69,17 @@ struct TopBarView: View {
                 .frame(width: 240)
                 
                 Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        store.isCalendarVisible.toggle()
+                    }
+                } label: {
+                    Image(systemName: "calendar")
+                        .foregroundStyle(store.isCalendarVisible ? .blue : .primary)
+                }
+                .buttonStyle(.plain)
+                .help("Toggle Calendar")
+                
+                Button {
                     store.showingSettings = true
                 } label: {
                     Image(systemName: "gearshape")

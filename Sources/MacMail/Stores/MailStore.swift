@@ -31,6 +31,7 @@ final class MailStore: ObservableObject {
     @Published var showingComposer = false
     @Published var composeAction: ComposeAction = .new
     @Published var showingSettings = false
+    @Published var isCalendarVisible = false
     @Published private(set) var oauthSummary = GoogleOAuthClientStore.currentSummary()
 
     // Undo Send State

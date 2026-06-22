@@ -608,7 +608,7 @@ struct ComposerView: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                let appFolder = appSupport.appendingPathComponent("GmailBox")
+                let appFolder = appSupport.appendingPathComponent("MacMail")
                 try FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: true)
                 let destination = appFolder.appendingPathComponent("signature_photo.\(url.pathExtension)")
                 if FileManager.default.fileExists(atPath: destination.path) {

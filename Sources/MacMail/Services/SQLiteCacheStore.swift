@@ -7,7 +7,7 @@ final class SQLiteCacheStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(databaseURL: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "GmailBox/GmailBox.sqlite")) {
+    init(databaseURL: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "MacMail/MacMail.sqlite")) {
         self.databaseURL = databaseURL
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601

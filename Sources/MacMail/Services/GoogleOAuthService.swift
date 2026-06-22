@@ -37,6 +37,7 @@ final class GoogleOAuthService {
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/calendar.readonly",
         "openid",
         "email",
         "profile"
@@ -219,7 +220,7 @@ private final class LocalOAuthRedirectServer: @unchecked Sendable {
     }
 
     private let listener: NWListener
-    private let queue = DispatchQueue(label: "GmailBox.OAuthRedirectServer")
+    private let queue = DispatchQueue(label: "MacMail.OAuthRedirectServer")
     private var startContinuation: CheckedContinuation<Void, Error>?
     private var callbackContinuation: CheckedContinuation<Callback, Error>?
     private var pendingCallback: Callback?
@@ -306,7 +307,7 @@ private final class LocalOAuthRedirectServer: @unchecked Sendable {
                 self.listener.cancel()
                 self.complete(callback)
             } else {
-                self.sendResponse(on: connection, success: false, body: "GmailBox is waiting for the Google sign-in callback. You can close this tab.")
+                self.sendResponse(on: connection, success: false, body: "MacMail is waiting for the Google sign-in callback. You can close this tab.")
             }
         }
     }
@@ -343,7 +344,7 @@ private final class LocalOAuthRedirectServer: @unchecked Sendable {
     }
 
     private func sendResponse(on connection: NWConnection, success: Bool, body customBody: String? = nil) {
-        let body = customBody ?? (success ? "GmailBox sign-in is complete. You can return to the app." : "GmailBox could not complete sign-in. Return to the app and try again.")
+        let body = customBody ?? (success ? "MacMail sign-in is complete. You can return to the app." : "MacMail could not complete sign-in. Return to the app and try again.")
         let response = """
         HTTP/1.1 200 OK\r
         Content-Type: text/plain; charset=utf-8\r

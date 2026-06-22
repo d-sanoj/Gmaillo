@@ -3,16 +3,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "GmailBox",
+    name: "MacMail",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "GmailBox", targets: ["GmailBox"])
+        .executable(name: "MacMail", targets: ["MacMail"])
     ],
     targets: [
         .executableTarget(
-            name: "GmailBox",
+            name: "MacMail",
             exclude: [
                 "Config/GoogleOAuthClient.example.json"
             ],

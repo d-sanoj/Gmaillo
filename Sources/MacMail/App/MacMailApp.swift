@@ -9,12 +9,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct GmailBoxApp: App {
+struct MacMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = MailStore()
 
     var body: some Scene {
-        WindowGroup("Gmaillo") {
+        WindowGroup("MacMail") {
             ContentView(store: store)
                 .frame(minWidth: 1100, minHeight: 720)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
