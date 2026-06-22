@@ -7,6 +7,7 @@ enum ComposeAction: Equatable {
     case reply(GmailMessage)
     case replyAll(GmailMessage)
     case forward(GmailMessage)
+    case resumeDraft(GmailMessage)
 }
 
 @MainActor
@@ -19,6 +20,8 @@ final class MailStore: ObservableObject {
     @Published private(set) var labels: [GmailLabel] = []
     @Published private(set) var threads: [GmailThread] = []
     @Published private(set) var messages: [GmailMessage] = []
+    @Published var remoteSearchResults: [GmailThread]? = nil
+    @Published var isSearchingRemote = false
     @Published private(set) var isSyncing = false
     @Published private(set) var syncProgressCount: Int = 0
     @Published private(set) var syncProgressTotal: Int = 0
@@ -29,6 +32,11 @@ final class MailStore: ObservableObject {
     @Published var composeAction: ComposeAction = .new
     @Published var showingSettings = false
     @Published private(set) var oauthSummary = GoogleOAuthClientStore.currentSummary()
+
+    // Undo Send State
+    @Published var showUndoBanner = false
+    private var pendingSendTask: Task<Void, Never>?
+    private var pendingSendPayload: (() -> Void)?
 
     var hiddenLabelIds: Set<String> {
         get {
@@ -68,7 +76,7 @@ final class MailStore: ObservableObject {
         hiddenToolbarButtons = hidden
     }
 
-    private let oauthService: GoogleOAuthService
+    let oauthService: GoogleOAuthService
     private let apiClient: GmailAPIClient
     private let cache: SQLiteCacheStore
     private let backgroundRefreshPageSize = 75
@@ -96,6 +104,10 @@ final class MailStore: ObservableObject {
     }
 
     var filteredThreads: [GmailThread] {
+        if let results = remoteSearchResults {
+            return results.sorted { $0.lastMessageDate > $1.lastMessageDate }
+        }
+        
         let selectedLabel = selectedMailbox.gmailLabelId
         let matchingMailbox = threads.filter { thread in
             if thread.labelIds.contains(GmailSystemLabel.trash) {
@@ -212,7 +224,7 @@ final class MailStore: ObservableObject {
                 }
                 selectedAccountId = account.id
                 try cache.saveAccounts(accounts)
-                await syncAllOldMessages()
+                await sync()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -245,10 +257,6 @@ final class MailStore: ObservableObject {
             selectedMailbox = selection
         }
         selectedThreadIds.removeAll()
-        if let first = filteredThreads.first {
-            selectedThreadIds.insert(first.id)
-            loadCachedMessages(for: first)
-        }
     }
 
     func selectThread(id: String) {
@@ -289,16 +297,37 @@ final class MailStore: ObservableObject {
         }
     }
 
-    func refresh() async {
-        await syncAccountMailboxes(full: false, notifyNewMail: false, showMissingAccountError: true, isBackground: false)
-    }
-
-    func syncAllOldMessages() async {
-        await syncAccountMailboxes(full: true, notifyNewMail: false, showMissingAccountError: true, isBackground: false)
+    func sync() async {
+        guard let account = selectedAccount else { return }
+        let shouldFullSync = threads.filter { $0.accountId == account.id }.isEmpty
+        await syncAccountMailboxes(full: shouldFullSync, notifyNewMail: false, showMissingAccountError: true, isBackground: false)
     }
 
     func performBackgroundCheck() async {
         await syncAccountMailboxes(full: false, notifyNewMail: true, showMissingAccountError: false, isBackground: true)
+    }
+    
+    func performRemoteSearch() async {
+        guard let account = selectedAccount, !searchText.isEmpty else {
+            await MainActor.run { self.remoteSearchResults = nil }
+            return
+        }
+        
+        await MainActor.run { isSearchingRemote = true }
+        
+        do {
+            let token = try await oauthService.validAccessToken(for: account)
+            let results = try await apiClient.threads(accessToken: token, query: searchText, labelId: nil, maxResults: 50)
+            await MainActor.run {
+                self.remoteSearchResults = results
+                self.isSearchingRemote = false
+            }
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Search failed: \(error.localizedDescription)"
+                self.isSearchingRemote = false
+            }
+        }
     }
 
     func loadSelectedThreadFromAPI() {
@@ -329,7 +358,9 @@ final class MailStore: ObservableObject {
             return
         }
 
-        Task {
+        pendingSendTask?.cancel()
+        
+        pendingSendTask = Task {
             do {
                 let token = try await oauthService.validAccessToken(for: account)
                 let rawMessage = try MIMEMessageBuilder.build(
@@ -345,12 +376,70 @@ final class MailStore: ObservableObject {
                     inReplyTo: inReplyTo,
                     references: references
                 )
+                
+                await MainActor.run {
+                    self.showingComposer = false
+                    self.showUndoBanner = true
+                    
+                    // Allow the user to resume if they undo
+                    self.pendingSendPayload = {
+                        self.openComposer(for: .new) // Ideally we'd resume the exact draft here. For now, open empty.
+                        // We will improve this when we add full Draft support.
+                    }
+                }
+                
+                try await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds undo delay
+                
+                guard !Task.isCancelled else { return }
+                
+                await MainActor.run {
+                    self.showUndoBanner = false
+                }
+                
                 try await apiClient.sendMessage(accessToken: token, rawRFC822Base64URL: rawMessage, threadId: threadId)
-                showingComposer = false
-                await refresh()
+                await sync()
             } catch {
-                errorMessage = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.showUndoBanner = false
+                    self.errorMessage = error.localizedDescription
+                }
             }
+        }
+    }
+    
+    func undoSend() {
+        pendingSendTask?.cancel()
+        pendingSendTask = nil
+        showUndoBanner = false
+        pendingSendPayload?()
+        pendingSendPayload = nil
+    }
+
+    func saveDraft(draftId: String?, to: String, cc: String, bcc: String, subject: String, plainText: String, htmlBody: String?, attachments: [URL], inlineImages: [(cid: String, data: Data, mimeType: String)] = [], threadId: String? = nil, inReplyTo: String? = nil, references: String? = nil) async throws -> String {
+        guard let account = selectedAccount else {
+            throw MailActionError.missingActiveAccount
+        }
+        
+        let token = try await oauthService.validAccessToken(for: account)
+        let rawMessage = try MIMEMessageBuilder.build(
+            from: account.email,
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            plainText: plainText,
+            htmlBody: htmlBody,
+            attachments: attachments,
+            inlineImages: inlineImages,
+            inReplyTo: inReplyTo,
+            references: references
+        )
+        
+        if let draftId = draftId {
+            return try await apiClient.updateDraft(accessToken: token, draftId: draftId, rawRFC822Base64URL: rawMessage, threadId: threadId)
+        } else {
+            return try await apiClient.createDraft(accessToken: token, rawRFC822Base64URL: rawMessage, threadId: threadId)
         }
     }
 
@@ -393,7 +482,7 @@ final class MailStore: ObservableObject {
                         try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         let freshToken = try await oauthService.validAccessToken(for: account)
                         try await apiClient.sendDraft(accessToken: freshToken, draftId: draftId)
-                        await refresh()
+                        await sync()
                     } catch {
                         print("Failed to send scheduled draft: \(error)")
                     }
@@ -480,9 +569,6 @@ final class MailStore: ObservableObject {
                 
                 if selectedThreadIds.contains(thread.id) {
                     selectedThreadIds.remove(thread.id)
-                    if selectedThreadIds.isEmpty, let first = filteredThreads.first {
-                        selectedThreadIds.insert(first.id)
-                    }
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -602,9 +688,6 @@ final class MailStore: ObservableObject {
                 try cache.saveThreads(threads, accountId: account.id)
             }
             selectedThreadIds.removeAll()
-            if let first = filteredThreads.first {
-                selectedThreadIds.insert(first.id)
-            }
             if let selectedThread {
                 loadCachedMessages(for: selectedThread)
             }
@@ -630,6 +713,19 @@ final class MailStore: ObservableObject {
         threads = []
         messages = []
         selectedThreadIds.removeAll()
+    }
+    
+    private func updateDockBadge() {
+        var totalUnread = 0
+        for account in accounts {
+            if let cachedLabels = try? cache.loadLabels(accountId: account.id) {
+                let inboxLabel = cachedLabels.first(where: { $0.id == GmailSystemLabel.inbox })
+                totalUnread += inboxLabel?.unreadCount ?? 0
+            }
+        }
+        DispatchQueue.main.async {
+            NSApp.dockTile.badgeLabel = totalUnread > 0 ? "\(totalUnread)" : nil
+        }
     }
 
     private func updateThreadSummary(threadId: String, accountId: String, messages: [GmailMessage]) {
@@ -770,12 +866,11 @@ final class MailStore: ObservableObject {
                 lastIncrementalSyncDate: full ? syncState?.lastIncrementalSyncDate : Date()
             ))
             lastSyncDate = Date()
+            
+            updateDockBadge()
 
             if selectedThreadIds.isEmpty || selectedThread == nil {
                 selectedThreadIds.removeAll()
-                if let first = filteredThreads.first {
-                    selectedThreadIds.insert(first.id)
-                }
             }
             if let selectedThread {
                 loadCachedMessages(for: selectedThread)

@@ -6,8 +6,8 @@ Follow these steps once before signing in with GmailBox.
 2. Create a new project named `GmailBox`.
 3. Open "APIs & Services".
 4. Click "Enable APIs and Services".
-5. Search for "Gmail API".
-6. Enable Gmail API.
+5. Search for "Gmail API" and enable it.
+6. Search for "Google Drive API" and enable it.
 7. Go to "OAuth consent screen".
 8. Choose "External" if using a normal Gmail account.
 9. Fill app name as `GmailBox`.
@@ -18,6 +18,7 @@ Follow these steps once before signing in with GmailBox.
     - `https://www.googleapis.com/auth/gmail.labels`
     - `https://www.googleapis.com/auth/gmail.compose`
     - `https://www.googleapis.com/auth/gmail.send`
+    - `https://www.googleapis.com/auth/drive.readonly`
 13. Add the user's Gmail accounts as test users.
 14. Go to "Credentials".
 15. Click "Create Credentials".

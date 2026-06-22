@@ -17,7 +17,7 @@ struct ContentView: View {
 
                 HSplitView {
                     ThreadListView(store: store)
-                        .frame(minWidth: 260, idealWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 350, maxHeight: .infinity)
 
                     ReadingPaneView(store: store)
                         .frame(minWidth: 460, idealWidth: 900, maxWidth: .infinity, maxHeight: .infinity)
@@ -31,6 +31,37 @@ struct ContentView: View {
                 SetupEmptyStateView(store: store)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.ultraThinMaterial)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if store.showUndoBanner {
+                HStack(spacing: 16) {
+                    Text("Sending message...")
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
+                    
+                    Button("Undo") {
+                        store.undoSend()
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color(nsColor: .systemYellow))
+                    .fontWeight(.semibold)
+                    .contentShape(Rectangle())
+                    .onHover { isHovering in
+                        if isHovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.black.opacity(0.85), in: Capsule())
+                .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+                .padding(24)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: store.showUndoBanner)
             }
         }
         .sheet(isPresented: $store.showingComposer) {

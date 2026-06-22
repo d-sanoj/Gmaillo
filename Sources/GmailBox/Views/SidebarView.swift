@@ -121,6 +121,9 @@ struct SidebarView: View {
                     }
                 }
             }
+            .background(Color.clear.contentShape(Rectangle()).onTapGesture {
+                store.selectedThreadIds.removeAll()
+            })
         }
     }
 

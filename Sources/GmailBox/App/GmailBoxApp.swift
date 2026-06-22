@@ -24,8 +24,8 @@ struct GmailBoxApp: App {
         }
         .commands {
             CommandMenu("Mailbox") {
-                Button("Refresh") {
-                    Task { await store.refresh() }
+                Button("Sync") {
+                    Task { await store.sync() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 

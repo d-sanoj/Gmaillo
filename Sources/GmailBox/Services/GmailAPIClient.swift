@@ -106,11 +106,16 @@ final class GmailAPIClient {
     func allThreads(accessToken: String, query: String? = nil, labelId: String? = nil, pageSize: Int = 100, includeSpamTrash: Bool = false, progress: ((Int) -> Void)? = nil) async throws -> [GmailThread] {
         var allThreads: [GmailThread] = []
         var pageToken: String?
+        var pageCount = 0
 
         repeat {
             let page = try await threadPage(accessToken: accessToken, query: query, labelId: labelId, maxResults: pageSize, pageToken: pageToken, includeSpamTrash: includeSpamTrash)
             allThreads.append(contentsOf: try await hydrateThreadSummaries(page.threads, accessToken: accessToken, progress: progress))
             pageToken = page.nextPageToken
+            pageCount += 1
+            
+            // Limit to 5 pages (500 threads max) for initial full sync to prevent 403 Rate Limit Exceeded
+            if pageCount >= 5 { break }
         } while pageToken != nil
 
         return allThreads
@@ -141,6 +146,9 @@ final class GmailAPIClient {
             hydrated.append(contentsOf: hydratedBatch)
             progress?(hydratedBatch.count)
             index = end
+            
+            // Brief pause between batches to respect rate limits
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
 
         return hydrated.sorted { $0.lastMessageDate > $1.lastMessageDate }
@@ -275,6 +283,18 @@ final class GmailAPIClient {
         }
         let body = try JSONSerialization.data(withJSONObject: ["message": messagePayload])
         let responseData = try await send(path: "drafts", method: "POST", body: body, accessToken: accessToken)
+        struct Response: Decodable { let id: String }
+        let decoded = try JSONDecoder().decode(Response.self, from: responseData)
+        return decoded.id
+    }
+
+    func updateDraft(accessToken: String, draftId: String, rawRFC822Base64URL: String, threadId: String? = nil) async throws -> String {
+        var messagePayload: [String: Any] = ["raw": rawRFC822Base64URL]
+        if let threadId = threadId {
+            messagePayload["threadId"] = threadId
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["message": messagePayload])
+        let responseData = try await send(path: "drafts/\(draftId)", method: "PUT", body: body, accessToken: accessToken)
         struct Response: Decodable { let id: String }
         let decoded = try JSONDecoder().decode(Response.self, from: responseData)
         return decoded.id
@@ -440,6 +460,36 @@ private struct GmailMessagePart: Decodable {
         }
     }
 
+    var parsedFilename: String? {
+        if let fn = filename, !fn.isEmpty {
+            return fn
+        }
+        
+        let contentDisposition = header("Content-Disposition") ?? ""
+        if let range = contentDisposition.range(of: "filename=\"") {
+            let start = range.upperBound
+            if let end = contentDisposition[start...].firstIndex(of: "\"") {
+                return String(contentDisposition[start..<end])
+            }
+        }
+        
+        let contentType = header("Content-Type") ?? ""
+        if let range = contentType.range(of: "name=\"") {
+            let start = range.upperBound
+            if let end = contentType[start...].firstIndex(of: "\"") {
+                return String(contentType[start..<end])
+            }
+        }
+        
+        if let range = contentDisposition.range(of: "filename=") {
+            let start = range.upperBound
+            let substr = contentDisposition[start...].split(separator: ";").first ?? ""
+            return String(substr).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        return nil
+    }
+
     var hasAttachments: Bool {
         flattenedParts.contains { part in
             part.isUserFacingAttachment
@@ -449,19 +499,33 @@ private struct GmailMessagePart: Decodable {
     func attachments(messageId: String) -> [GmailAttachment] {
         flattenedParts.compactMap { part in
             guard part.isUserFacingAttachment,
-                  let filename = part.filename,
-                  let attachmentId = part.body?.attachmentId else {
+                  let filename = part.parsedFilename else {
                 return nil
             }
+            
+            let id = part.body?.attachmentId ?? part.partId ?? UUID().uuidString
+            var localURL: URL? = nil
+            var isDownloaded = false
+            
+            if part.body?.attachmentId == nil, let base64Data = part.body?.data.flatMap({ Data(base64URLEncoded: $0) }) {
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("GmailBoxPreviews", isDirectory: true)
+                    .appendingPathComponent(filename)
+                try? FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil)
+                try? base64Data.write(to: tempURL, options: [.atomic])
+                localURL = tempURL
+                isDownloaded = true
+            }
+            
             return GmailAttachment(
-                id: "\(messageId)-\(attachmentId)",
+                id: "\(messageId)-\(id)",
                 messageId: messageId,
                 filename: filename,
                 mimeType: part.mimeType ?? "application/octet-stream",
                 size: part.body?.size ?? 0,
-                attachmentId: attachmentId,
-                isDownloaded: false,
-                localFileURL: nil
+                attachmentId: id,
+                isDownloaded: isDownloaded,
+                localFileURL: localURL
             )
         }
     }
@@ -471,7 +535,11 @@ private struct GmailMessagePart: Decodable {
     }
 
     private var isUserFacingAttachment: Bool {
-        guard let filename, !filename.isEmpty, body?.attachmentId != nil else {
+        guard let filename = parsedFilename, !filename.isEmpty else {
+            return false
+        }
+        
+        guard body?.attachmentId != nil || body?.data != nil else {
             return false
         }
 

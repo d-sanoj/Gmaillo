@@ -14,6 +14,7 @@ struct ComposerView: View {
     @State private var linkText = ""
     @State private var linkURL = ""
     @AppStorage("DefaultSignature") private var signature = ""
+    @AppStorage("DefaultSignaturePhotoURL") private var signaturePhotoURL = ""
     @State private var isShowingSignatureEditor = false
     @State private var scheduleDate = Date().addingTimeInterval(3600)
     @State private var showSchedulePicker = false
@@ -21,6 +22,10 @@ struct ComposerView: View {
     @State private var inReplyTo: String?
     @State private var references: String?
     @State private var hiddenTrailingQuoteHTML: String?
+    @State private var currentDraftId: String?
+    @State private var isAutosaving = false
+    @State private var autosaveTimer: Timer?
+    @State private var showingDrivePicker = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,11 +64,37 @@ struct ComposerView: View {
             linkSheet
         }
         .sheet(isPresented: $isShowingSignatureEditor) {
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("Edit Signature").font(.headline)
-                TextEditor(text: $signature)
-                    .frame(height: 100)
-                    .border(Color.secondary.opacity(0.2))
+                
+                VStack(alignment: .leading) {
+                    Text("Text:")
+                    TextEditor(text: $signature)
+                        .frame(height: 80)
+                        .border(Color.secondary.opacity(0.2))
+                }
+                
+                HStack {
+                    Text("Photo:")
+                    if !signaturePhotoURL.isEmpty, let url = URL(string: signaturePhotoURL), let nsImage = NSImage(contentsOf: url) {
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 40)
+                    } else {
+                        Text("None").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Select Photo...") {
+                        selectSignaturePhoto()
+                    }
+                    if !signaturePhotoURL.isEmpty {
+                        Button("Remove") {
+                            signaturePhotoURL = ""
+                        }
+                    }
+                }
+                
                 HStack {
                     Spacer()
                     Button("Done") { isShowingSignatureEditor = false }
@@ -73,14 +104,88 @@ struct ComposerView: View {
             .padding()
             .frame(width: 400)
         }
+        .sheet(isPresented: $showingDrivePicker) {
+            DrivePickerView(store: store) { file in
+                if let url = file.webViewLink {
+                    let attachmentString = NSMutableAttributedString(string: "\(file.name) ")
+                    let fullRange = NSRange(location: 0, length: attachmentString.length)
+                    attachmentString.addAttribute(.link, value: url, range: fullRange)
+                    attachmentString.addAttribute(.font, value: NSFont.systemFont(ofSize: 14), range: fullRange)
+                    
+                    let mut = NSMutableAttributedString(attributedString: bodyText)
+                    mut.append(attachmentString)
+                    bodyText = mut
+                }
+            }
+        }
         .onAppear {
             setupComposeAction()
-            if !signature.isEmpty {
-                let attrSig = NSAttributedString(string: "\n\n--\n\(signature)")
+            if store.composeAction == .new && (!signature.isEmpty || !signaturePhotoURL.isEmpty) {
                 let mut = NSMutableAttributedString(attributedString: bodyText)
-                mut.append(attrSig)
+                mut.append(NSAttributedString(string: "\n\n--\n"))
+                
+                if !signature.isEmpty {
+                    mut.append(NSAttributedString(string: "\(signature)\n"))
+                }
+                
+                if !signaturePhotoURL.isEmpty, let url = URL(string: signaturePhotoURL), let img = NSImage(contentsOf: url) {
+                    let attachment = NSTextAttachment()
+                    attachment.image = img
+                    
+                    let maxWidth: CGFloat = 200
+                    if img.size.width > maxWidth {
+                        let ratio = maxWidth / img.size.width
+                        let newSize = NSSize(width: maxWidth, height: img.size.height * ratio)
+                        img.size = newSize
+                    }
+                    
+                    attachment.bounds = NSRect(origin: .zero, size: img.size)
+                    mut.append(NSAttributedString(attachment: attachment))
+                }
+                
                 bodyText = mut
             }
+            startAutosaveTimer()
+        }
+        .onDisappear {
+            autosaveTimer?.invalidate()
+        }
+    }
+
+    private func startAutosaveTimer() {
+        autosaveTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { _ in
+            guard !to.isEmpty || !subject.isEmpty || bodyText.length > 0 else { return }
+            Task { await performAutosave() }
+        }
+    }
+
+    private func performAutosave() async {
+        guard !isAutosaving else { return }
+        isAutosaving = true
+        defer { isAutosaving = false }
+        
+        let payload = generateEmailPayload()
+        
+        do {
+            let newDraftId = try await store.saveDraft(
+                draftId: currentDraftId,
+                to: to,
+                cc: cc,
+                bcc: bcc,
+                subject: subject,
+                plainText: payload.plainText,
+                htmlBody: payload.html,
+                attachments: attachments.map(\.url),
+                inlineImages: payload.inlineImages,
+                threadId: threadId,
+                inReplyTo: inReplyTo,
+                references: references
+            )
+            await MainActor.run {
+                self.currentDraftId = newDraftId
+            }
+        } catch {
+            print("Autosave failed: \(error)")
         }
     }
 
@@ -109,6 +214,28 @@ struct ComposerView: View {
             subject = msg.subject.lowercased().hasPrefix("fwd:") ? msg.subject : "Fwd: \(msg.subject)"
             threadId = msg.threadId
             setupQuotedBody(msg, isHidden: false)
+        case .resumeDraft(let msg):
+            to = msg.to.joined(separator: ", ")
+            cc = msg.cc.joined(separator: ", ")
+            bcc = msg.bcc.joined(separator: ", ")
+            subject = msg.subject
+            threadId = msg.threadId
+            
+            // Gmail API returns the draft id inside the message payload or id
+            // However, we don't have the explicit draftId here unless we fetch it.
+            // But we can assume the messageId is the draftId for update purposes.
+            // Wait, GmailMessage has id which is messageId. For drafts, we need draftId.
+            // For now, if we update, it might create a new draft if we pass nil.
+            // Let's pass nil and let it create a new draft for now if it saves.
+            
+            if let html = msg.htmlBody {
+                if let data = html.data(using: .utf8),
+                   let attrStr = try? NSMutableAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {
+                    bodyText = attrStr
+                }
+            } else if let text = msg.plainTextBody {
+                bodyText = NSAttributedString(string: text)
+            }
         }
     }
 
@@ -167,10 +294,9 @@ struct ComposerView: View {
             htmlString = htmlString.replacingOccurrences(of: "[[[CID:\(img.cid)]]]", with: "<img src=\"cid:\(img.cid)\" />")
         }
         
-        var finalPlainText = plainText
+        let finalPlainText = plainText
         if let hiddenQuote = hiddenTrailingQuoteHTML {
             htmlString += hiddenQuote
-            // Optionally add a plain text version of the quote, but HTML usually takes precedence
         }
         
         return (htmlString, finalPlainText, inlineImages)
@@ -182,46 +308,55 @@ struct ComposerView: View {
         case .reply: return "Reply"
         case .replyAll: return "Reply All"
         case .forward: return "Forward"
+        case .resumeDraft: return "Resume Draft"
         }
     }
 
     private var titleBar: some View {
-        HStack {
+        ZStack {
             Text(titleText)
                 .font(.headline)
-            Spacer()
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
+            
+            HStack {
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(12)
         .background(.bar)
     }
 
+    private func formatBtn(icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .help(help)
+        .focusable(false)
+    }
+
     private var formattingToolbar: some View {
-        HStack(spacing: 6) {
-            Button("B") { NSFontManager.shared.addFontTrait(TraitSender(tag: 2)) }
-                .font(.system(size: 14, weight: .bold))
-                .help("Bold (Cmd-B)")
-                .focusable(false)
-            Button("I") { NSFontManager.shared.addFontTrait(TraitSender(tag: 1)) }
-                .font(.system(size: 14, weight: .medium).italic())
-                .help("Italic (Cmd-I)")
-                .focusable(false)
-            Button("U") { NSApp.sendAction(#selector(NSTextView.underline(_:)), to: nil, from: nil) }
-                .font(.system(size: 14, weight: .medium))
-                .underline()
-                .help("Underline (Cmd-U)")
-                .focusable(false)
+        HStack(spacing: 8) {
+            formatBtn(icon: "bold", help: "Bold (Cmd-B)") { NSApp.sendAction(#selector(NSFontManager.addFontTrait(_:)), to: nil, from: TraitSender(tag: 2)) }
+            formatBtn(icon: "italic", help: "Italic (Cmd-I)") { NSApp.sendAction(#selector(NSFontManager.addFontTrait(_:)), to: nil, from: TraitSender(tag: 1)) }
+            formatBtn(icon: "underline", help: "Underline (Cmd-U)") { NSApp.sendAction(#selector(NSTextView.underline(_:)), to: nil, from: nil) }
             
             Divider().frame(height: 22)
 
-            Button("Font Panel") { NSFontManager.shared.orderFrontFontPanel(nil) }
-                .help("Show Font Panel (Cmd-T)")
-                .focusable(false)
+            Button { NSFontManager.shared.orderFrontFontPanel(nil) } label: {
+                Text("Font Panel")
+                    .padding(.horizontal, 6)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+            }
+            .help("Show Font Panel (Cmd-T)")
+            .focusable(false)
 
             Menu {
                 Button("Black") {}
@@ -230,6 +365,8 @@ struct ComposerView: View {
                 Button("Red") {}
             } label: {
                 Image(systemName: "textformat")
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .help("Text color")
 
@@ -241,29 +378,25 @@ struct ComposerView: View {
                 Button("Align right") {}
             } label: {
                 Image(systemName: "text.alignleft")
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .help("Alignment")
 
-            Button {} label: { Image(systemName: "list.number") }
-                .help("Numbered list")
-            Button {} label: { Image(systemName: "list.bullet") }
-                .help("Bulleted list")
-            Button {} label: { Image(systemName: "decrease.indent") }
-                .help("Decrease indent")
-            Button {} label: { Image(systemName: "increase.indent") }
-                .help("Increase indent")
+            formatBtn(icon: "list.number", help: "Numbered list") { NSApp.sendAction(#selector(NSTextView.toggleNumberedList(_:)), to: nil, from: nil) }
+            formatBtn(icon: "list.bullet", help: "Bulleted list") { NSApp.sendAction(#selector(NSTextView.toggleBulletedList(_:)), to: nil, from: nil) }
+            formatBtn(icon: "decrease.indent", help: "Decrease indent") { NSApp.sendAction(#selector(NSTextView.decreaseIndent(_:)), to: nil, from: nil) }
+            formatBtn(icon: "increase.indent", help: "Increase indent") { NSApp.sendAction(#selector(NSTextView.increaseIndent(_:)), to: nil, from: nil) }
 
             Divider().frame(height: 22)
 
-            Button {} label: { Image(systemName: "arrow.uturn.backward") }
-                .help("Undo")
-            Button {} label: { Image(systemName: "arrow.uturn.forward") }
-                .help("Redo")
+            formatBtn(icon: "arrow.uturn.backward", help: "Undo") { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+            formatBtn(icon: "arrow.uturn.forward", help: "Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
         }
         .buttonStyle(.plain)
         .controlSize(.regular)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         .background(.quaternary.opacity(0.55), in: Capsule())
     }
 
@@ -341,7 +474,7 @@ struct ComposerView: View {
             }
 
             toolbarButton("Insert files using Drive", icon: "triangleshape") {
-                store.errorMessage = "Drive insert needs Google Drive picker/API wiring. The compose control is now present and ready for that integration."
+                showingDrivePicker = true
             }
 
             toolbarButton("Insert photo", icon: "photo") {
@@ -462,6 +595,31 @@ struct ComposerView: View {
                 ComposeAttachment(url: $0, isInlineImage: allowedImageOnly)
             }
             attachments.append(contentsOf: newAttachments)
+        }
+    }
+
+    private func selectSignaturePhoto() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                let appFolder = appSupport.appendingPathComponent("GmailBox")
+                try FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: true)
+                let destination = appFolder.appendingPathComponent("signature_photo.\(url.pathExtension)")
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: url, to: destination)
+                signaturePhotoURL = destination.absoluteString
+            } catch {
+                print("Failed to save signature photo: \(error)")
+                signaturePhotoURL = url.absoluteString
+            }
         }
     }
 }

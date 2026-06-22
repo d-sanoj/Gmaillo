@@ -17,11 +17,21 @@ struct ThreadListView: View {
                 TextField("Search mail", text: $store.searchText)
                     .textFieldStyle(.plain)
                     .onSubmit {
-                        Task { await store.refresh() }
+                        Task { await store.performRemoteSearch() }
                     }
-                if !store.searchText.isEmpty {
+                    .onChange(of: store.searchText) { newValue in
+                        if newValue.isEmpty {
+                            store.remoteSearchResults = nil
+                        }
+                    }
+                
+                if store.isSearchingRemote {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if !store.searchText.isEmpty {
                     Button {
                         store.searchText = ""
+                        store.remoteSearchResults = nil
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                     }

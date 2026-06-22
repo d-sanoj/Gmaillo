@@ -24,6 +24,20 @@ struct ReadingPaneView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 20)
                     
+                    if thread.labelIds.contains(GmailSystemLabel.drafts) {
+                        Button {
+                            if let lastMsg = store.selectedMessages.max(by: { $0.date < $1.date }) {
+                                store.openComposer(for: .resumeDraft(lastMsg))
+                            }
+                        } label: {
+                            Label("Resume Draft", systemImage: "pencil.line")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .padding(.horizontal, 20)
+                    }
+                    
                     ForEach(store.selectedMessages) { message in
                         MessageHeaderView(message: message, store: store)
                             .padding(.horizontal, 20)
@@ -34,7 +48,9 @@ struct ReadingPaneView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture {
+                    store.selectedThreadIds.removeAll()
+                })
             } else {
                 ContentUnavailableView(
                     "Select a conversation",
