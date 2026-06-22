@@ -263,6 +263,19 @@ final class GmailAPIClient {
         _ = try await send(path: "messages/send", method: "POST", body: body, accessToken: accessToken)
     }
 
+    func createDraft(accessToken: String, rawRFC822Base64URL: String) async throws -> String {
+        let body = try JSONSerialization.data(withJSONObject: ["message": ["raw": rawRFC822Base64URL]])
+        let responseData = try await send(path: "drafts", method: "POST", body: body, accessToken: accessToken)
+        struct Response: Decodable { let id: String }
+        let decoded = try JSONDecoder().decode(Response.self, from: responseData)
+        return decoded.id
+    }
+
+    func sendDraft(accessToken: String, draftId: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["id": draftId])
+        _ = try await send(path: "drafts/send", method: "POST", body: body, accessToken: accessToken)
+    }
+
     func attachmentData(accessToken: String, messageId: String, attachmentId: String) async throws -> Data {
         let data = try await send(path: "messages/\(messageId)/attachments/\(attachmentId)", accessToken: accessToken)
         struct Response: Decodable {

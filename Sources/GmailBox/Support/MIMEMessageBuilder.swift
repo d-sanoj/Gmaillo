@@ -10,9 +10,11 @@ enum MIMEMessageBuilder {
         subject: String,
         plainText: String,
         htmlBody: String?,
-        attachments: [URL]
+        attachments: [URL],
+        inlineImages: [(cid: String, data: Data, mimeType: String)] = []
     ) throws -> String {
-        let boundary = "Boundary-\(UUID().uuidString)"
+        let mixedBoundary = "MixedBoundary-\(UUID().uuidString)"
+        let relatedBoundary = "RelatedBoundary-\(UUID().uuidString)"
         let altBoundary = "AltBoundary-\(UUID().uuidString)"
 
         var lines = [
@@ -29,11 +31,19 @@ enum MIMEMessageBuilder {
             lines.append("Bcc: \(bcc)")
         }
 
-        let isMultipart = !attachments.isEmpty
-        if isMultipart {
-            lines.append("Content-Type: multipart/mixed; boundary=\"\(boundary)\"")
+        let hasAttachments = !attachments.isEmpty
+        let hasInline = !inlineImages.isEmpty
+
+        if hasAttachments {
+            lines.append("Content-Type: multipart/mixed; boundary=\"\(mixedBoundary)\"")
             lines.append("")
-            lines.append("--\(boundary)")
+            lines.append("--\(mixedBoundary)")
+        }
+
+        if hasInline {
+            lines.append("Content-Type: multipart/related; boundary=\"\(relatedBoundary)\"")
+            lines.append("")
+            lines.append("--\(relatedBoundary)")
         }
 
         let hasHTML = htmlBody != nil && !htmlBody!.isEmpty
@@ -63,13 +73,26 @@ enum MIMEMessageBuilder {
             lines.append(plainText)
         }
 
-        if isMultipart {
+        if hasInline {
+            for img in inlineImages {
+                lines.append("--\(relatedBoundary)")
+                lines.append("Content-Type: \(img.mimeType); name=\"inline-image.png\"")
+                lines.append("Content-ID: <\(img.cid)>")
+                lines.append("Content-Disposition: inline; filename=\"inline-image.png\"")
+                lines.append("Content-Transfer-Encoding: base64")
+                lines.append("")
+                lines.append(img.data.base64EncodedString(options: .lineLength64Characters))
+            }
+            lines.append("--\(relatedBoundary)--")
+        }
+
+        if hasAttachments {
             for url in attachments {
                 guard let data = try? Data(contentsOf: url) else { continue }
                 let filename = url.lastPathComponent
                 let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
                 
-                lines.append("--\(boundary)")
+                lines.append("--\(mixedBoundary)")
                 lines.append("Content-Type: \(mimeType); name=\"\(filename)\"")
                 lines.append("Content-Disposition: attachment; filename=\"\(filename)\"")
                 lines.append("Content-Transfer-Encoding: base64")
@@ -78,7 +101,7 @@ enum MIMEMessageBuilder {
                 let base64 = data.base64EncodedString(options: .lineLength64Characters)
                 lines.append(base64)
             }
-            lines.append("--\(boundary)--")
+            lines.append("--\(mixedBoundary)--")
         }
 
         let message = lines.joined(separator: "\r\n")
@@ -98,6 +121,5 @@ extension Data {
         base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
     }
 }

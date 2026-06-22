@@ -310,7 +310,7 @@ final class MailStore: ObservableObject {
         }
     }
 
-    func sendEmail(to: String, cc: String, bcc: String, subject: String, plainText: String, htmlBody: String?, attachments: [URL]) {
+    func sendEmail(to: String, cc: String, bcc: String, subject: String, plainText: String, htmlBody: String?, attachments: [URL], inlineImages: [(cid: String, data: Data, mimeType: String)] = []) {
         guard let account = selectedAccount else {
             errorMessage = "Sign in with a Gmail account before sending."
             return
@@ -327,13 +327,64 @@ final class MailStore: ObservableObject {
                     subject: subject,
                     plainText: plainText,
                     htmlBody: htmlBody,
-                    attachments: attachments
+                    attachments: attachments,
+                    inlineImages: inlineImages
                 )
                 try await apiClient.sendMessage(accessToken: token, rawRFC822Base64URL: rawMessage)
                 showingComposer = false
                 await refresh()
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func scheduleEmail(to: String, cc: String, bcc: String, subject: String, plainText: String, htmlBody: String?, attachments: [URL], inlineImages: [(cid: String, data: Data, mimeType: String)] = [], date: Date) {
+        guard let account = selectedAccount else {
+            errorMessage = "Sign in with a Gmail account before scheduling."
+            return
+        }
+        
+        let rawMessage: String
+        do {
+            rawMessage = try MIMEMessageBuilder.build(
+                from: account.email,
+                to: to,
+                cc: cc,
+                bcc: bcc,
+                subject: subject,
+                plainText: plainText,
+                htmlBody: htmlBody,
+                attachments: attachments,
+                inlineImages: inlineImages
+            )
+        } catch {
+            errorMessage = "Failed to build scheduled message: \(error.localizedDescription)"
+            return
+        }
+        
+        Task {
+            do {
+                let token = try await oauthService.validAccessToken(for: account)
+                let draftId = try await apiClient.createDraft(accessToken: token, rawRFC822Base64URL: rawMessage)
+                
+                // Set up local timer to send it when the date arrives. 
+                // A robust solution would persist this to UserDefaults.
+                let delay = max(0, date.timeIntervalSinceNow)
+                Task {
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        let freshToken = try await oauthService.validAccessToken(for: account)
+                        try await apiClient.sendDraft(accessToken: freshToken, draftId: draftId)
+                        await refresh()
+                    } catch {
+                        print("Failed to send scheduled draft: \(error)")
+                    }
+                }
+                
+                showingComposer = false
+            } catch {
+                errorMessage = "Failed to schedule email: \(error.localizedDescription)"
             }
         }
     }

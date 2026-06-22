@@ -8,17 +8,16 @@ struct ComposerView: View {
     @State private var cc = ""
     @State private var bcc = ""
     @State private var subject = ""
-    @State private var bodyText = ""
-    @State private var showFormatting = true
-    @State private var isBold = false
-    @State private var isItalic = false
-    @State private var isUnderlined = false
-    @State private var selectedFont = "Sans Serif"
-    @State private var selectedSize = "Normal"
+    @State private var bodyText = NSAttributedString()
     @State private var attachments: [ComposeAttachment] = []
     @State private var showingLinkSheet = false
     @State private var linkText = ""
     @State private var linkURL = ""
+    @AppStorage("DefaultSignature") private var signature = ""
+    @State private var isShowingSignatureEditor = false
+    @State private var scheduleDate = Date().addingTimeInterval(3600)
+    @State private var showSchedulePicker = false
+
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,11 +29,10 @@ struct ComposerView: View {
                 field("Bcc", text: $bcc)
                 field("Subject", text: $subject)
 
-                TextEditor(text: $bodyText)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(10)
+                RichTextEditor(attributedText: $bodyText)
                     .frame(minHeight: 230)
+                    .background(Color(NSColor.textBackgroundColor))
+                    .padding(2)
 
                 if !attachments.isEmpty {
                     AttachmentShelf(attachments: $attachments)
@@ -46,10 +44,8 @@ struct ComposerView: View {
             Divider()
 
             VStack(spacing: 8) {
-                if showFormatting {
-                    formattingToolbar
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+                formattingToolbar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 actionToolbar
             }
             .padding(12)
@@ -58,54 +54,60 @@ struct ComposerView: View {
         .sheet(isPresented: $showingLinkSheet) {
             linkSheet
         }
-    }
-
-    private var generatedHTML: String? {
-        let hasFormatting = isBold || isItalic || isUnderlined || selectedFont != "Sans Serif" || selectedSize != "Normal" || bodyText.contains("\n")
-        guard hasFormatting else { return nil }
-
-        let fontMap: [String: String] = [
-            "Sans Serif": "sans-serif",
-            "Serif": "serif",
-            "Fixed Width": "monospace"
-        ]
-        let sizeMap: [String: String] = [
-            "Small": "small",
-            "Normal": "medium",
-            "Large": "large",
-            "Huge": "x-large"
-        ]
-
-        var styles: [String] = []
-        if let fontFamily = fontMap[selectedFont] { styles.append("font-family: \(fontFamily)") }
-        if let fontSize = sizeMap[selectedSize] { styles.append("font-size: \(fontSize)") }
-        if isBold { styles.append("font-weight: bold") }
-        if isItalic { styles.append("font-style: italic") }
-        if isUnderlined { styles.append("text-decoration: underline") }
-
-        let styleString = styles.joined(separator: "; ")
-        
-        let htmlContent = bodyText
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\n", with: "<br>")
-
-        // Very basic link support for markdown links [text](url)
-        let linkRegex = try? NSRegularExpression(pattern: "\\[(.*?)\\]\\((.*?)\\)")
-        var processedHtmlContent = htmlContent
-        if let regex = linkRegex {
-            let nsString = processedHtmlContent as NSString
-            let results = regex.matches(in: processedHtmlContent, range: NSRange(location: 0, length: nsString.length))
-            for result in results.reversed() {
-                let text = nsString.substring(with: result.range(at: 1))
-                let url = nsString.substring(with: result.range(at: 2))
-                let linkHtml = "<a href=\"\(url)\">\(text)</a>"
-                processedHtmlContent = (processedHtmlContent as NSString).replacingCharacters(in: result.range, with: linkHtml)
+        .sheet(isPresented: $isShowingSignatureEditor) {
+            VStack(alignment: .leading) {
+                Text("Edit Signature").font(.headline)
+                TextEditor(text: $signature)
+                    .frame(height: 100)
+                    .border(Color.secondary.opacity(0.2))
+                HStack {
+                    Spacer()
+                    Button("Done") { isShowingSignatureEditor = false }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding()
+            .frame(width: 400)
+        }
+        .onAppear {
+            if !signature.isEmpty {
+                let attrSig = NSAttributedString(string: "\n\n--\n\(signature)")
+                let mut = NSMutableAttributedString(attributedString: bodyText)
+                mut.append(attrSig)
+                bodyText = mut
             }
         }
+    }
 
-        return "<div style=\"\(styleString)\">\(processedHtmlContent)</div>"
+    private func generateEmailPayload() -> (html: String, plainText: String, inlineImages: [(cid: String, data: Data, mimeType: String)]) {
+        let mutableStr = NSMutableAttributedString(attributedString: bodyText)
+        var inlineImages: [(cid: String, data: Data, mimeType: String)] = []
+        
+        var offset = 0
+        bodyText.enumerateAttribute(.attachment, in: NSRange(location: 0, length: bodyText.length), options: []) { value, range, stop in
+            if let attachment = value as? NSTextAttachment,
+               let image = attachment.image ?? (attachment.fileWrapper?.regularFileContents.flatMap { NSImage(data: $0) }) {
+                let cid = UUID().uuidString
+                if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let data = rep.representation(using: .png, properties: [:]) {
+                    inlineImages.append((cid: cid, data: data, mimeType: "image/png"))
+                    
+                    let placeholder = NSAttributedString(string: "[[[CID:\(cid)]]]")
+                    let adjustedRange = NSRange(location: range.location + offset, length: range.length)
+                    mutableStr.replaceCharacters(in: adjustedRange, with: placeholder)
+                    offset += placeholder.length - range.length
+                }
+            }
+        }
+        
+        let plainText = mutableStr.string
+        let htmlData = try? mutableStr.data(from: NSRange(location: 0, length: mutableStr.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.html])
+        var htmlString = htmlData.flatMap { String(data: $0, encoding: .utf8) } ?? plainText
+        
+        for img in inlineImages {
+            htmlString = htmlString.replacingOccurrences(of: "[[[CID:\(img.cid)]]]", with: "<img src=\"cid:\(img.cid)\" />")
+        }
+        
+        return (htmlString, plainText, inlineImages)
     }
 
     private var titleBar: some View {
@@ -126,28 +128,21 @@ struct ComposerView: View {
 
     private var formattingToolbar: some View {
         HStack(spacing: 6) {
-            Picker("Font", selection: $selectedFont) {
-                Text("Sans Serif").tag("Sans Serif")
-                Text("Serif").tag("Serif")
-                Text("Fixed Width").tag("Fixed Width")
-            }
-            .frame(width: 128)
-
+            Button("B") { NSApp.sendAction(#selector(NSFontManager.addFontTrait(_:)), to: nil, from: TraitSender(tag: 2)) }
+                .font(.system(size: 14, weight: .bold))
+                .help("Bold (Cmd-B)")
+            Button("I") { NSApp.sendAction(#selector(NSFontManager.addFontTrait(_:)), to: nil, from: TraitSender(tag: 1)) }
+                .font(.system(size: 14, weight: .medium).italic())
+                .help("Italic (Cmd-I)")
+            Button("U") { NSApp.sendAction(#selector(NSTextView.underline(_:)), to: nil, from: nil) }
+                .font(.system(size: 14, weight: .medium))
+                .underline()
+                .help("Underline (Cmd-U)")
+            
             Divider().frame(height: 22)
 
-            Picker("Size", selection: $selectedSize) {
-                Text("Small").tag("Small")
-                Text("Normal").tag("Normal")
-                Text("Large").tag("Large")
-                Text("Huge").tag("Huge")
-            }
-            .frame(width: 104)
-
-            Divider().frame(height: 22)
-
-            toggleFormat("Bold", icon: "bold", isOn: $isBold)
-            toggleFormat("Italic", icon: "italic", isOn: $isItalic)
-            toggleFormat("Underline", icon: "underline", isOn: $isUnderlined)
+            Button("Font Panel") { NSApp.sendAction(#selector(NSFontManager.orderFrontFontPanel(_:)), to: nil, from: nil) }
+                .help("Show Font Panel (Cmd-T)")
 
             Menu {
                 Button("Black") {}
@@ -196,14 +191,16 @@ struct ComposerView: View {
     private var actionToolbar: some View {
         HStack(spacing: 10) {
             Button {
+                let payload = generateEmailPayload()
                 store.sendEmail(
                     to: to,
                     cc: cc,
                     bcc: bcc,
                     subject: subject,
-                    plainText: bodyText,
-                    htmlBody: generatedHTML,
-                    attachments: attachments.map(\.url)
+                    plainText: payload.plainText,
+                    htmlBody: payload.html,
+                    attachments: attachments.map(\.url),
+                    inlineImages: payload.inlineImages
                 )
             } label: {
                 HStack(spacing: 0) {
@@ -218,12 +215,33 @@ struct ComposerView: View {
             }
             .buttonStyle(.borderedProminent)
             .help("Send")
-            .disabled(to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            toolbarButton("Formatting", icon: "textformat.size") {
-                withAnimation(.snappy(duration: 0.18)) {
-                    showFormatting.toggle()
+            .disabled(to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            
+            Menu {
+                Button("Schedule Send") { showSchedulePicker = true }
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.bordered)
+            .popover(isPresented: $showSchedulePicker) {
+                VStack {
+                    DatePicker("Schedule send time", selection: $scheduleDate, in: Date()...)
+                        .datePickerStyle(.graphical)
+                    Button("Schedule Send") {
+                        let payload = generateEmailPayload()
+                        store.scheduleEmail(
+                            to: to, cc: cc, bcc: bcc, subject: subject,
+                            plainText: payload.plainText, htmlBody: payload.html,
+                            attachments: attachments.map(\.url), inlineImages: payload.inlineImages,
+                            date: scheduleDate
+                        )
+                        showSchedulePicker = false
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
+                .padding()
+                .frame(width: 320)
             }
 
             toolbarButton("Attach files", icon: "paperclip") {
@@ -246,8 +264,8 @@ struct ComposerView: View {
                 store.errorMessage = "Confidential mode is a Gmail server-side feature. The control is present; sending support needs Gmail-compatible confidential metadata."
             }
 
-            toolbarButton("Insert signature", icon: "signature") {
-                bodyText += bodyText.hasSuffix("\n") || bodyText.isEmpty ? "--\n" : "\n--\n"
+            toolbarButton("Signature Settings", icon: "signature") {
+                isShowingSignatureEditor = true
             }
 
             Menu {
@@ -291,7 +309,12 @@ struct ComposerView: View {
                 }
                 Button("Insert") {
                     let text = linkText.isEmpty ? linkURL : linkText
-                    bodyText += "[\(text)](\(linkURL))"
+                    if let url = URL(string: linkURL) {
+                        let attrStr = NSMutableAttributedString(attributedString: bodyText)
+                        let linkAttr = NSAttributedString(string: text, attributes: [.link: url])
+                        attrStr.append(linkAttr)
+                        bodyText = attrStr
+                    }
                     showingLinkSheet = false
                     linkText = ""
                     linkURL = ""
@@ -353,6 +376,11 @@ struct ComposerView: View {
             attachments.append(contentsOf: newAttachments)
         }
     }
+}
+
+private class TraitSender: NSObject {
+    @objc var tag: Int
+    init(tag: Int) { self.tag = tag }
 }
 
 private struct ComposeAttachment: Identifiable, Hashable {
