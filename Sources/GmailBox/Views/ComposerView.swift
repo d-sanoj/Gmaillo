@@ -194,56 +194,69 @@ struct ComposerView: View {
 
     private var actionToolbar: some View {
         HStack(spacing: 10) {
-            Button {
-                let payload = generateEmailPayload()
-                store.sendEmail(
-                    to: to,
-                    cc: cc,
-                    bcc: bcc,
-                    subject: subject,
-                    plainText: payload.plainText,
-                    htmlBody: payload.html,
-                    attachments: attachments.map(\.url),
-                    inlineImages: payload.inlineImages
-                )
-            } label: {
-                HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Button {
+                    let payload = generateEmailPayload()
+                    store.sendEmail(
+                        to: to,
+                        cc: cc,
+                        bcc: bcc,
+                        subject: subject,
+                        plainText: payload.plainText,
+                        htmlBody: payload.html,
+                        attachments: attachments.map(\.url),
+                        inlineImages: payload.inlineImages
+                    )
+                } label: {
                     Text("Send")
                         .fontWeight(.semibold)
                         .padding(.horizontal, 18)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
                 }
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.borderedProminent)
-            .help("Send")
-            .disabled(to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            
-            Menu {
-                Button("Schedule Send") { showSchedulePicker = true }
-            } label: {
-                Image(systemName: "chevron.down")
-            }
-            .buttonStyle(.bordered)
-            .popover(isPresented: $showSchedulePicker) {
-                VStack {
-                    DatePicker("Schedule send time", selection: $scheduleDate, in: Date()...)
-                        .datePickerStyle(.graphical)
-                    Button("Schedule Send") {
-                        let payload = generateEmailPayload()
-                        store.scheduleEmail(
-                            to: to, cc: cc, bcc: bcc, subject: subject,
-                            plainText: payload.plainText, htmlBody: payload.html,
-                            attachments: attachments.map(\.url), inlineImages: payload.inlineImages,
-                            date: scheduleDate
-                        )
-                        showSchedulePicker = false
-                        dismiss()
+                .buttonStyle(.plain)
+                .disabled(to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Send")
+                
+                Divider()
+                    .frame(height: 26)
+                    .background(Color.white.opacity(0.3))
+                
+                Menu {
+                    Button("Schedule Send") { showSchedulePicker = true }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .popover(isPresented: $showSchedulePicker) {
+                    VStack {
+                        DatePicker("Schedule send time", selection: $scheduleDate, in: Date()...)
+                            .datePickerStyle(.graphical)
+                        Button("Schedule Send") {
+                            let payload = generateEmailPayload()
+                            store.scheduleEmail(
+                                to: to, cc: cc, bcc: bcc, subject: subject,
+                                plainText: payload.plainText, htmlBody: payload.html,
+                                attachments: attachments.map(\.url), inlineImages: payload.inlineImages,
+                                date: scheduleDate
+                            )
+                            showSchedulePicker = false
+                            dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .padding()
+                    .frame(width: 320)
                 }
-                .padding()
-                .frame(width: 320)
             }
+            .background(Color.accentColor)
+            .foregroundColor(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .opacity(to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1.0)
 
             toolbarButton("Attach files", icon: "paperclip") {
                 pickFiles(allowedImageOnly: false)
