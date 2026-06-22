@@ -2,6 +2,8 @@
 
 MacMail is a native macOS email client designed specifically for Gmail and Google Calendar, built with Swift, SwiftUI, and AppKit. It interfaces directly with the Google APIs using OAuth 2.0 and stores data in a local SQLite database, avoiding the use of web wrappers.
 
+> **📥 Download the App:** Try it out by downloading the latest `.dmg` from the [Releases page](https://github.com/d-sanoj/MacMail/releases).
+
 ## Features
 
 ### Architecture
