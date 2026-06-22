@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @ObservedObject var store: MailStore
@@ -7,21 +8,20 @@ struct ContentView: View {
         VStack(spacing: 0) {
             TopBarView(store: store)
             Divider()
-            HSplitView {
+            HStack(spacing: 0) {
                 SidebarView(store: store)
-                    .frame(
-                        minWidth: store.isSidebarCollapsed ? 60 : 220,
-                        idealWidth: store.isSidebarCollapsed ? 60 : 260,
-                        maxWidth: store.isSidebarCollapsed ? 60 : 320,
-                        maxHeight: .infinity
-                    )
-                    .animation(.default, value: store.isSidebarCollapsed)
+                    .frame(width: store.isSidebarCollapsed ? 60 : 220)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.8), value: store.isSidebarCollapsed)
 
-                ThreadListView(store: store)
-                    .frame(minWidth: 360, idealWidth: 440, maxHeight: .infinity)
+                Divider()
 
-                ReadingPaneView(store: store)
-                    .frame(minWidth: 460, maxHeight: .infinity)
+                HSplitView {
+                    ThreadListView(store: store)
+                        .frame(minWidth: 260, idealWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+
+                    ReadingPaneView(store: store)
+                        .frame(minWidth: 460, idealWidth: 900, maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -40,7 +40,7 @@ struct ContentView: View {
             SettingsView(store: store)
         }
 
-        .alert("GmailBox", isPresented: Binding(
+        .alert("Gmaillo", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
         )) {
@@ -53,11 +53,17 @@ struct ContentView: View {
         .task(id: store.selectedAccountId) {
             guard store.selectedAccountId != nil else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
                 guard !Task.isCancelled else { return }
                 await store.performBackgroundCheck()
             }
         }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            Task {
+                await store.performBackgroundCheck()
+            }
+        }
+        .navigationTitle("Gmaillo")
     }
 }
 

@@ -5,41 +5,33 @@ struct SidebarView: View {
     @AppStorage("sidebarMoreExpanded") private var isMoreExpanded = false
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 0) {
             Button {
                 store.showingComposer = true
             } label: {
-                if store.isSidebarCollapsed {
+                ZStack(alignment: .leading) {
                     Image(systemName: "square.and.pencil")
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Label("Compose", systemImage: "square.and.pencil")
-                        .frame(maxWidth: .infinity)
+                        .font(.body)
+                        .frame(width: store.isSidebarCollapsed ? 40 : 20, alignment: .center)
+                    Text("Compose")
+                        .padding(.leading, 32)
+                        .opacity(store.isSidebarCollapsed ? 0 : 1)
+                        .frame(width: store.isSidebarCollapsed ? 0 : nil, alignment: .leading)
+                        .clipped()
                 }
+                .padding(.horizontal, store.isSidebarCollapsed ? 0 : 8)
+                .frame(height: 36)
+                .frame(maxWidth: store.isSidebarCollapsed ? 40 : .infinity, alignment: store.isSidebarCollapsed ? .center : .leading)
+                .background(Color.blue)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: store.isSidebarCollapsed ? 18 : 8))
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding([.horizontal, .top], 12)
+            .buttonStyle(.plain)
+            .padding(.horizontal, store.isSidebarCollapsed ? 10 : 12)
+            .padding(.vertical, 12)
 
-            List(selection: Binding<MailboxSelection?>(
-                get: {
-                    if case .category = store.selectedMailbox {
-                        return .system(GmailSystemLabel.inbox)
-                    }
-                    return store.selectedMailbox
-                },
-                set: { selection in
-                    if let selection {
-                        // If they click Inbox while a category was selected, reset to Primary
-                        if case .system(let id) = selection, id == GmailSystemLabel.inbox, case .category = store.selectedMailbox {
-                            store.selectMailbox(.system(GmailSystemLabel.inbox))
-                        } else {
-                            store.selectMailbox(selection)
-                        }
-                    }
-                }
-            )) {
-                Section(store.isSidebarCollapsed ? "" : "Mailboxes") {
+            ScrollView {
+                VStack(spacing: 4) {
                     if !store.hiddenLabelIds.contains(GmailSystemLabel.inbox) { sidebarRow("Inbox", icon: "tray", selection: .system(GmailSystemLabel.inbox)) }
                     if !store.hiddenLabelIds.contains(GmailSystemLabel.starred) { sidebarRow("Starred", icon: "star", selection: .system(GmailSystemLabel.starred)) }
                     if !store.hiddenLabelIds.contains(GmailSystemLabel.important) { sidebarRow("Important", icon: "chevron.right.2", selection: .system(GmailSystemLabel.important)) }
@@ -50,16 +42,25 @@ struct SidebarView: View {
                             isMoreExpanded.toggle()
                         }
                     } label: {
-                        if store.isSidebarCollapsed {
+                        ZStack(alignment: .leading) {
                             Image(systemName: isMoreExpanded ? "chevron.up" : "chevron.down")
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        } else {
-                            Label(isMoreExpanded ? "Less" : "More", systemImage: isMoreExpanded ? "chevron.up" : "chevron.down")
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(width: store.isSidebarCollapsed ? 40 : 20, alignment: .center)
+                            Text(isMoreExpanded ? "Less" : "More")
+                                .padding(.leading, 32)
+                                .opacity(store.isSidebarCollapsed ? 0 : 1)
+                                .frame(width: store.isSidebarCollapsed ? 0 : nil, alignment: .leading)
+                                .clipped()
                         }
+                        .padding(.horizontal, store.isSidebarCollapsed ? 0 : 8)
+                        .frame(height: 36)
+                        .frame(maxWidth: store.isSidebarCollapsed ? 40 : .infinity, alignment: store.isSidebarCollapsed ? .center : .leading)
+                        .contentShape(Rectangle())
+                        .modifier(SidebarHoverBackground(isSelected: false))
+                        .clipShape(RoundedRectangle(cornerRadius: store.isSidebarCollapsed ? 18 : 8))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, store.isSidebarCollapsed ? 10 : 12)
 
                     if isMoreExpanded {
                         if !store.hiddenLabelIds.contains(GmailSystemLabel.snoozed) { sidebarRow("Snoozed", icon: "clock", selection: .system(GmailSystemLabel.snoozed)) }
@@ -69,30 +70,46 @@ struct SidebarView: View {
                         if !store.hiddenLabelIds.contains(GmailSystemLabel.spam) { sidebarRow("Spam", icon: "exclamationmark.octagon", selection: .system(GmailSystemLabel.spam), emphasizeUnread: true) }
                         if !store.hiddenLabelIds.contains(GmailSystemLabel.trash) { sidebarRow("Trash", icon: "trash", selection: .system(GmailSystemLabel.trash)) }
                     }
-                }
 
-                let visibleCustomLabels = store.customLabels.filter { !store.hiddenLabelIds.contains($0.id) }
-                if !visibleCustomLabels.isEmpty {
-                    Section {
+                    let visibleCustomLabels = store.customLabels.filter { !store.hiddenLabelIds.contains($0.id) }
+                    if !visibleCustomLabels.isEmpty {
+                        Divider().padding(.vertical, 8)
                         ForEach(visibleCustomLabels) { label in
                             let labelSelection = MailboxSelection.label(label.id)
-                            Label {
-                                if !store.isSidebarCollapsed {
+                            let isSelected = store.selectedMailbox == labelSelection
+                            let counts = store.count(for: labelSelection)
+                            
+                            Button {
+                                store.selectMailbox(labelSelection)
+                            } label: {
+                                ZStack(alignment: .leading) {
+                                    Image(systemName: "tag")
+                                        .foregroundStyle(isSelected ? .white : (Color(hex: label.colorHex) ?? .secondary))
+                                        .frame(width: store.isSidebarCollapsed ? 40 : 20, alignment: .center)
+                                    
                                     HStack {
                                         Text(label.name)
                                         Spacer()
-                                        let counts = store.count(for: labelSelection)
                                         if counts.total > 0 {
                                             Text("\(counts.unread)/\(counts.total)")
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
                                         }
                                     }
+                                    .padding(.leading, 32)
+                                    .opacity(store.isSidebarCollapsed ? 0 : 1)
+                                    .frame(width: store.isSidebarCollapsed ? 0 : nil, alignment: .leading)
+                                    .clipped()
                                 }
-                            } icon: {
-                                Image(systemName: "tag")
-                                    .foregroundStyle(Color(hex: label.colorHex) ?? .secondary)
+                                .padding(.horizontal, store.isSidebarCollapsed ? 0 : 8)
+                                .frame(height: 36)
+                                .frame(maxWidth: store.isSidebarCollapsed ? 40 : .infinity, alignment: store.isSidebarCollapsed ? .center : .leading)
+                                .contentShape(Rectangle())
+                                .modifier(SidebarHoverBackground(isSelected: isSelected))
+                                .foregroundStyle(isSelected ? .white : .primary)
+                                .clipShape(RoundedRectangle(cornerRadius: store.isSidebarCollapsed ? 18 : 8))
                             }
-                            .tag(labelSelection)
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, store.isSidebarCollapsed ? 10 : 12)
                             .contextMenu {
                                 Button(role: .destructive) {
                                     store.deleteLabel(label)
@@ -101,38 +118,54 @@ struct SidebarView: View {
                                 }
                             }
                         }
-                    } header: {
-                        if !store.isSidebarCollapsed {
-                            Text("Labels")
-                        }
                     }
                 }
             }
-            .listStyle(.sidebar)
         }
     }
 
     private func sidebarRow(_ title: String, icon: String, selection: MailboxSelection, emphasizeUnread: Bool = false) -> some View {
+        let isSelected = {
+            if case .category = store.selectedMailbox, case .system(let id) = selection, id == GmailSystemLabel.inbox {
+                return true
+            }
+            return store.selectedMailbox == selection
+        }()
         let counts = store.count(for: selection)
-        return Label {
-            if !store.isSidebarCollapsed {
+        
+        return Button {
+            store.selectMailbox(selection)
+        } label: {
+            ZStack(alignment: .leading) {
+                Image(systemName: icon)
+                    .foregroundStyle(isSelected ? .white : .secondary)
+                    .frame(width: store.isSidebarCollapsed ? 40 : 20, alignment: .center)
+
                 HStack {
                     Text(title)
                         .fontWeight(emphasizeUnread && counts.unread > 0 ? .semibold : .regular)
                     Spacer()
                     if counts.total > 0 && selection.gmailLabelId != GmailSystemLabel.sent {
                         Text("\(counts.unread)/\(counts.total)")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
                     }
                 }
+                .padding(.leading, 32)
+                .opacity(store.isSidebarCollapsed ? 0 : 1)
+                .frame(width: store.isSidebarCollapsed ? 0 : nil, alignment: .leading)
+                .clipped()
             }
-        } icon: {
-            Image(systemName: icon)
-                .foregroundStyle(.secondary)
+            .padding(.horizontal, store.isSidebarCollapsed ? 0 : 8)
+            .frame(height: 36)
+            .frame(maxWidth: store.isSidebarCollapsed ? 40 : .infinity, alignment: store.isSidebarCollapsed ? .center : .leading)
+            .contentShape(Rectangle())
+            .modifier(SidebarHoverBackground(isSelected: isSelected))
+            .foregroundStyle(isSelected ? .white : .primary)
+            .clipShape(RoundedRectangle(cornerRadius: store.isSidebarCollapsed ? 18 : 8))
         }
-        .tag(selection)
+        .buttonStyle(.plain)
+        .padding(.horizontal, store.isSidebarCollapsed ? 10 : 12)
     }
-
     private func actionRow(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             if store.isSidebarCollapsed {
@@ -145,5 +178,18 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
+    }
+}
+
+private struct SidebarHoverBackground: ViewModifier {
+    let isSelected: Bool
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(isSelected ? Color.accentColor : (isHovering ? Color.secondary.opacity(0.15) : Color.clear))
+            .onHover { hovering in
+                isHovering = hovering
+            }
     }
 }

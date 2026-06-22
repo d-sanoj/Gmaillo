@@ -7,12 +7,14 @@ final class MailStore: ObservableObject {
     @Published private(set) var accounts: [GmailAccount] = []
     @Published var selectedAccountId: String?
     @Published var selectedMailbox: MailboxSelection = .system(GmailSystemLabel.inbox)
-    @Published var selectedThreadId: String?
+    @Published var selectedThreadIds: Set<String> = []
     @Published var searchText = ""
     @Published private(set) var labels: [GmailLabel] = []
     @Published private(set) var threads: [GmailThread] = []
     @Published private(set) var messages: [GmailMessage] = []
     @Published private(set) var isSyncing = false
+    @Published private(set) var syncProgressCount: Int = 0
+    @Published private(set) var syncProgressTotal: Int = 0
     @Published private(set) var isSigningIn = false
     @Published private(set) var lastSyncDate: Date?
     @Published var errorMessage: String?
@@ -20,11 +22,17 @@ final class MailStore: ObservableObject {
     @Published var showingSettings = false
     @Published private(set) var oauthSummary = GoogleOAuthClientStore.currentSummary()
 
-    @AppStorage("HiddenLabelIds") var hiddenLabelIdsRaw: String = ""
-
     var hiddenLabelIds: Set<String> {
-        get { Set(hiddenLabelIdsRaw.split(separator: ",").map(String.init)) }
-        set { hiddenLabelIdsRaw = newValue.joined(separator: ",") }
+        get {
+            guard let accountId = selectedAccountId else { return [] }
+            let raw = UserDefaults.standard.string(forKey: "HiddenLabelIds_\(accountId)") ?? ""
+            return Set(raw.split(separator: ",").map(String.init))
+        }
+        set {
+            guard let accountId = selectedAccountId else { return }
+            UserDefaults.standard.set(newValue.joined(separator: ","), forKey: "HiddenLabelIds_\(accountId)")
+            objectWillChange.send()
+        }
     }
 
     @AppStorage("isSidebarCollapsed") var isSidebarCollapsed = false
@@ -68,7 +76,10 @@ final class MailStore: ObservableObject {
     }
 
     var selectedThread: GmailThread? {
-        filteredThreads.first { $0.id == selectedThreadId } ?? filteredThreads.first
+        if selectedThreadIds.count == 1, let id = selectedThreadIds.first {
+            return filteredThreads.first { $0.id == id }
+        }
+        return nil
     }
 
     var filteredThreads: [GmailThread] {
@@ -120,9 +131,9 @@ final class MailStore: ObservableObject {
     }
 
     var selectedMessages: [GmailMessage] {
-        guard let selectedThread else { return [] }
+        guard selectedThreadIds.count == 1, let id = selectedThreadIds.first else { return [] }
         return messages
-            .filter { $0.threadId == selectedThread.id }
+            .filter { $0.threadId == id }
             .sorted { $0.date > $1.date }
     }
 
@@ -138,6 +149,13 @@ final class MailStore: ObservableObject {
         labels.filter { $0.type == .user }
     }
 
+    var isTrashFolder: Bool {
+        if case .system(let id) = selectedMailbox, id == GmailSystemLabel.trash {
+            return true
+        }
+        return false
+    }
+
     var hasAccounts: Bool {
         !accounts.isEmpty
     }
@@ -150,7 +168,12 @@ final class MailStore: ObservableObject {
             accounts = removeDemoAccounts(from: try cache.loadAccounts())
                 .filter { oauthService.hasStoredTokens(for: $0) }
             try cache.saveAccounts(accounts)
-            selectedAccountId = selectedAccountId ?? accounts.first?.id
+            let defaultId = UserDefaults.standard.string(forKey: "defaultAccountId") ?? ""
+            if !defaultId.isEmpty, let defaultAcc = accounts.first(where: { $0.id == defaultId }) {
+                selectedAccountId = selectedAccountId ?? defaultAcc.id
+            } else {
+                selectedAccountId = selectedAccountId ?? accounts.first?.id
+            }
             loadCachedMailbox()
         } catch {
             errorMessage = error.localizedDescription
@@ -198,37 +221,71 @@ final class MailStore: ObservableObject {
 
     func switchAccount(to accountId: String) {
         selectedAccountId = accountId
-        selectedThreadId = nil
+        selectedThreadIds.removeAll()
         loadCachedMailbox()
     }
 
     func selectMailbox(_ selection: MailboxSelection) {
-        selectedMailbox = selection
-        selectedThreadId = nil
+        if selection == .system(GmailSystemLabel.inbox) {
+            selectedMailbox = .category(GmailCategoryLabel.primary)
+        } else {
+            selectedMailbox = selection
+        }
+        selectedThreadIds.removeAll()
         if let first = filteredThreads.first {
-            selectedThreadId = first.id
+            selectedThreadIds.insert(first.id)
             loadCachedMessages(for: first)
         }
     }
 
-    func selectThread(_ thread: GmailThread) {
-        selectedThreadId = thread.id
-        loadCachedMessages(for: thread)
-        if selectedMessages.isEmpty {
-            loadSelectedThreadFromAPI()
+    func selectThread(id: String) {
+        selectedThreadIds = [id]
+        if let thread = filteredThreads.first(where: { $0.id == id }) {
+            loadCachedMessages(for: thread)
+            if selectedMessages.isEmpty {
+                loadSelectedThreadFromAPI()
+            }
+            if thread.isUnread {
+                markThreadAsRead(thread)
+            }
+        }
+    }
+
+    func markThreadAsRead(_ thread: GmailThread) {
+        guard let account = accounts.first(where: { $0.id == thread.accountId }) else { return }
+        
+        // Optimistically update local state
+        if let index = threads.firstIndex(where: { $0.id == thread.id && $0.accountId == account.id }) {
+            threads[index].isUnread = false
+            threads[index].labelIds.removeAll(where: { $0 == GmailSystemLabel.unread })
+            try? cache.saveThreads(threads.filter { $0.accountId == account.id }, accountId: account.id)
+        }
+        
+        // Update label cache count if necessary (optional UI polish)
+        if let index = labels.firstIndex(where: { $0.id == GmailSystemLabel.inbox }) {
+            labels[index].unreadCount = max(0, labels[index].unreadCount - 1)
+        }
+        
+        Task {
+            do {
+                let token = try await oauthService.validAccessToken(for: account)
+                try await apiClient.modifyThread(accessToken: token, threadId: thread.id, addLabelIds: [], removeLabelIds: [GmailSystemLabel.unread])
+            } catch {
+                print("Failed to mark thread as read: \(error)")
+            }
         }
     }
 
     func refresh() async {
-        await syncAccountMailboxes(full: true, notifyNewMail: false, showMissingAccountError: true)
+        await syncAccountMailboxes(full: false, notifyNewMail: false, showMissingAccountError: true, isBackground: false)
     }
 
     func syncAllOldMessages() async {
-        await syncAccountMailboxes(full: true, notifyNewMail: false, showMissingAccountError: true)
+        await syncAccountMailboxes(full: true, notifyNewMail: false, showMissingAccountError: true, isBackground: false)
     }
 
     func performBackgroundCheck() async {
-        await syncAccountMailboxes(full: true, notifyNewMail: true, showMissingAccountError: false)
+        await syncAccountMailboxes(full: false, notifyNewMail: true, showMissingAccountError: false, isBackground: true)
     }
 
     func loadSelectedThreadFromAPI() {
@@ -326,13 +383,17 @@ final class MailStore: ObservableObject {
         return previewURL
     }
 
-    func archiveSelectedThread() {
-        modifySelectedThread(remove: [GmailSystemLabel.inbox])
+    func archiveSelectedThreads() {
+        guard !isTrashFolder else { return }
+        modifySelectedThreads(remove: [GmailSystemLabel.inbox])
     }
 
-    func trashSelectedThread() {
-        guard let thread = selectedThread else { return }
-        trashThread(thread)
+    func trashSelectedThreads() {
+        guard !isTrashFolder else { return }
+        let threadsToTrash = filteredThreads.filter { selectedThreadIds.contains($0.id) }
+        for thread in threadsToTrash {
+            trashThread(thread)
+        }
     }
 
     func trashThread(_ thread: GmailThread) {
@@ -349,8 +410,11 @@ final class MailStore: ObservableObject {
                     try cache.saveThreads(threads.filter { $0.accountId == account.id }, accountId: account.id)
                 }
                 
-                if selectedThreadId == thread.id {
-                    selectedThreadId = filteredThreads.first?.id
+                if selectedThreadIds.contains(thread.id) {
+                    selectedThreadIds.remove(thread.id)
+                    if selectedThreadIds.isEmpty, let first = filteredThreads.first {
+                        selectedThreadIds.insert(first.id)
+                    }
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -358,17 +422,18 @@ final class MailStore: ObservableObject {
         }
     }
 
-    func toggleUnreadSelectedThread() {
-        guard let thread = selectedThread else { return }
-        if thread.isUnread {
-            modifySelectedThread(remove: [GmailSystemLabel.unread])
+    func toggleUnreadSelectedThreads() {
+        let selected = filteredThreads.filter { selectedThreadIds.contains($0.id) }
+        let allRead = selected.allSatisfy { !$0.isUnread }
+        if allRead {
+            modifySelectedThreads(add: [GmailSystemLabel.unread])
         } else {
-            modifySelectedThread(add: [GmailSystemLabel.unread])
+            modifySelectedThreads(remove: [GmailSystemLabel.unread])
         }
     }
 
-    func modifySelectedThreadForSpam() {
-        modifySelectedThread(add: [GmailSystemLabel.spam], remove: [GmailSystemLabel.inbox])
+    func modifySelectedThreadsForSpam() {
+        modifySelectedThreads(add: [GmailSystemLabel.spam], remove: [GmailSystemLabel.inbox])
     }
 
     func toggleStar(_ thread: GmailThread) {
@@ -424,9 +489,11 @@ final class MailStore: ObservableObject {
         }
     }
 
-    private func modifySelectedThread(add: [String] = [], remove: [String] = []) {
-        guard let thread = selectedThread else { return }
-        modifyThread(thread, add: add, remove: remove)
+    private func modifySelectedThreads(add: [String] = [], remove: [String] = []) {
+        let selected = filteredThreads.filter { selectedThreadIds.contains($0.id) }
+        for thread in selected {
+            modifyThread(thread, add: add, remove: remove)
+        }
     }
 
     private func modifyThread(_ thread: GmailThread, add: [String] = [], remove: [String] = []) {
@@ -466,7 +533,10 @@ final class MailStore: ObservableObject {
                 try cache.saveLabels(labels, accountId: account.id)
                 try cache.saveThreads(threads, accountId: account.id)
             }
-            selectedThreadId = filteredThreads.first?.id
+            selectedThreadIds.removeAll()
+            if let first = filteredThreads.first {
+                selectedThreadIds.insert(first.id)
+            }
             if let selectedThread {
                 loadCachedMessages(for: selectedThread)
             }
@@ -491,7 +561,7 @@ final class MailStore: ObservableObject {
         labels = []
         threads = []
         messages = []
-        selectedThreadId = nil
+        selectedThreadIds.removeAll()
     }
 
     private func updateThreadSummary(threadId: String, accountId: String, messages: [GmailMessage]) {
@@ -526,7 +596,7 @@ final class MailStore: ObservableObject {
         }
     }
 
-    private func syncAccountMailboxes(full: Bool, notifyNewMail: Bool, showMissingAccountError: Bool) async {
+    private func syncAccountMailboxes(full: Bool, notifyNewMail: Bool, showMissingAccountError: Bool, isBackground: Bool = false) async {
         guard let account = selectedAccount else {
             if showMissingAccountError {
                 errorMessage = MailActionError.missingActiveAccount.localizedDescription
@@ -536,39 +606,108 @@ final class MailStore: ObservableObject {
         guard !isSyncing && !isSigningIn else { return }
 
         let previousInboxThreadIds = Set(threads.filter { $0.accountId == account.id && $0.labelIds.contains(GmailSystemLabel.inbox) }.map(\.id))
-        isSyncing = true
-        defer { isSyncing = false }
+        
+        if !isBackground {
+            isSyncing = true
+            syncProgressCount = 0
+            syncProgressTotal = 0
+        }
+        
+        defer { 
+            if !isBackground {
+                isSyncing = false 
+                syncProgressCount = 0
+                syncProgressTotal = 0
+            }
+        }
+
+        let progressHandler: (Int) -> Void = { count in
+            DispatchQueue.main.async {
+                self.syncProgressCount += count
+            }
+        }
 
         do {
             let token = try await oauthService.validAccessToken(for: account)
-            var loadedLabels = try await apiClient.labels(accessToken: token)
-            loadedLabels = loadedLabels.map { label in
+            let profile = try await apiClient.profile(accessToken: token)
+            let syncState = try? cache.loadSyncState(accountId: account.id)
+
+            let loadedLabels = (try await apiClient.labels(accessToken: token)).map { label in
                 var label = label
                 label.accountId = account.id
                 return label
             }
 
-            let loadedThreads = try await syncedThreads(
-                accessToken: token,
-                accountId: account.id,
-                labels: loadedLabels,
-                full: full
-            )
+            var loadedThreads: [GmailThread]? = nil
+
+            if !full, let lastHistoryId = syncState?.historyId {
+                do {
+                    let historyRecords = try await apiClient.history(accessToken: token, startHistoryId: lastHistoryId)
+                    var changedThreadIds = Set<String>()
+                    for record in historyRecords {
+                        if let added = record.messagesAdded { changedThreadIds.formUnion(added.map(\.message.threadId)) }
+                        if let deleted = record.messagesDeleted { changedThreadIds.formUnion(deleted.map(\.message.threadId)) }
+                        if let labelsAdded = record.labelsAdded { changedThreadIds.formUnion(labelsAdded.map(\.message.threadId)) }
+                        if let labelsRemoved = record.labelsRemoved { changedThreadIds.formUnion(labelsRemoved.map(\.message.threadId)) }
+                    }
+
+                    if !changedThreadIds.isEmpty {
+                        syncProgressTotal = changedThreadIds.count
+                        let hydratedThreads = try await apiClient.hydrateSpecificThreads(Array(changedThreadIds), accessToken: token, progress: progressHandler)
+                        
+                        var merged = Dictionary(uniqueKeysWithValues: threads.filter { $0.accountId == account.id }.map { ($0.id, $0) })
+                        // Remove deleted threads that failed to hydrate (returned nil)
+                        let successfulHydrationIds = Set(hydratedThreads.map(\.id))
+                        let deletedIds = changedThreadIds.subtracting(successfulHydrationIds)
+                        for id in deletedIds {
+                            merged.removeValue(forKey: id)
+                        }
+                        
+                        merge(hydratedThreads, accountId: account.id, into: &merged)
+                        loadedThreads = merged.values.sorted { $0.lastMessageDate > $1.lastMessageDate }
+                    } else {
+                        loadedThreads = threads.filter { $0.accountId == account.id }
+                    }
+                } catch {
+                    // History API failed (likely 404 because historyId expired), fallback to incremental sync
+                }
+            }
+
+            if loadedThreads == nil {
+                let syncIds = syncLabelIds(from: loadedLabels)
+                let incrementalEstimate = syncIds.count * backgroundRefreshPageSize
+                if full {
+                    syncProgressTotal = profile.threadsTotal + incrementalEstimate
+                } else {
+                    syncProgressTotal = incrementalEstimate
+                }
+
+                loadedThreads = try await syncedThreads(
+                    accessToken: token,
+                    accountId: account.id,
+                    labels: loadedLabels,
+                    full: full,
+                    progress: progressHandler
+                )
+            }
 
             labels = loadedLabels
-            threads = loadedThreads
+            threads = loadedThreads ?? []
             try cache.saveLabels(loadedLabels, accountId: account.id)
-            try cache.saveThreads(loadedThreads, accountId: account.id)
+            try cache.saveThreads(loadedThreads ?? [], accountId: account.id)
             try cache.saveSyncState(SyncState(
                 accountId: account.id,
-                historyId: nil,
-                lastFullSyncDate: full ? Date() : nil,
-                lastIncrementalSyncDate: full ? nil : Date()
+                historyId: profile.historyId,
+                lastFullSyncDate: full ? Date() : syncState?.lastFullSyncDate,
+                lastIncrementalSyncDate: full ? syncState?.lastIncrementalSyncDate : Date()
             ))
             lastSyncDate = Date()
 
-            if selectedThreadId == nil || selectedThread == nil {
-                selectedThreadId = filteredThreads.first?.id
+            if selectedThreadIds.isEmpty || selectedThread == nil {
+                selectedThreadIds.removeAll()
+                if let first = filteredThreads.first {
+                    selectedThreadIds.insert(first.id)
+                }
             }
             if let selectedThread {
                 loadCachedMessages(for: selectedThread)
@@ -590,7 +729,7 @@ final class MailStore: ObservableObject {
         }
     }
 
-    private func syncedThreads(accessToken: String, accountId: String, labels: [GmailLabel], full: Bool) async throws -> [GmailThread] {
+    private func syncedThreads(accessToken: String, accountId: String, labels: [GmailLabel], full: Bool, progress: ((Int) -> Void)? = nil) async throws -> [GmailThread] {
         var mergedThreads = Dictionary(uniqueKeysWithValues: threads
             .filter { $0.accountId == accountId }
             .map { ($0.id, $0) })
@@ -599,7 +738,8 @@ final class MailStore: ObservableObject {
             let accountThreads = try await apiClient.allThreads(
                 accessToken: accessToken,
                 pageSize: 100,
-                includeSpamTrash: true
+                includeSpamTrash: true,
+                progress: progress
             )
             merge(accountThreads, accountId: accountId, into: &mergedThreads)
         }
@@ -610,7 +750,8 @@ final class MailStore: ObservableObject {
                 query: nil,
                 labelId: labelId,
                 maxResults: backgroundRefreshPageSize,
-                includeSpamTrash: true
+                includeSpamTrash: true,
+                progress: progress
             )
             merge(labelThreads, accountId: accountId, into: &mergedThreads)
         }

@@ -7,7 +7,16 @@ struct ReadingPaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let thread = store.selectedThread {
+            if store.selectedThreadIds.count > 1 {
+                header(nil)
+                Divider()
+                ContentUnavailableView(
+                    "\(store.selectedThreadIds.count) conversations selected",
+                    systemImage: "tray.fill",
+                    description: Text("Choose an action from the toolbar.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let thread = store.selectedThread {
                 header(thread)
                 Divider()
                 VStack(alignment: .leading, spacing: 16) {
@@ -47,20 +56,20 @@ struct ReadingPaneView: View {
         }
     }
 
-    private func header(_ thread: GmailThread) -> some View {
+    private func header(_ thread: GmailThread?) -> some View {
         HStack(spacing: 10) {
-            if !store.hiddenToolbarButtons.contains("archive") {
+            if !store.hiddenToolbarButtons.contains("archive") && !store.isTrashFolder {
                 Button {
-                    store.archiveSelectedThread()
+                    store.archiveSelectedThreads()
                 } label: {
                     toolbarLabel("Archive", icon: "archivebox")
                 }
                 .help("Archive")
             }
 
-            if !store.hiddenToolbarButtons.contains("delete") {
+            if !store.hiddenToolbarButtons.contains("delete") && !store.isTrashFolder {
                 Button {
-                    store.trashSelectedThread()
+                    store.trashSelectedThreads()
                 } label: {
                     toolbarLabel("Delete", icon: "trash")
                 }
@@ -68,17 +77,19 @@ struct ReadingPaneView: View {
             }
 
             if !store.hiddenToolbarButtons.contains("unread") {
+                let selected = store.filteredThreads.filter { store.selectedThreadIds.contains($0.id) }
+                let isUnread = selected.contains { $0.isUnread }
                 Button {
-                    store.toggleUnreadSelectedThread()
+                    store.toggleUnreadSelectedThreads()
                 } label: {
-                    toolbarLabel(thread.isUnread ? "Mark Read" : "Mark Unread", icon: thread.isUnread ? "envelope.open" : "envelope.badge")
+                    toolbarLabel(isUnread ? "Mark Read" : "Mark Unread", icon: isUnread ? "envelope.open" : "envelope.badge")
                 }
-                .help(thread.isUnread ? "Mark as read" : "Mark as unread")
+                .help(isUnread ? "Mark as read" : "Mark as unread")
             }
 
             if !store.hiddenToolbarButtons.contains("spam") {
                 Button {
-                    store.modifySelectedThreadForSpam()
+                    store.modifySelectedThreadsForSpam()
                 } label: {
                     toolbarLabel("Report Spam", icon: "exclamationmark.octagon")
                 }
@@ -89,13 +100,18 @@ struct ReadingPaneView: View {
                 Menu {
                     ForEach(store.customLabels) { label in
                         Button("Apply \(label.name)") {
-                            store.apply(label: label, to: thread)
+                            let selected = store.filteredThreads.filter { store.selectedThreadIds.contains($0.id) }
+                            for t in selected {
+                                store.apply(label: label, to: t)
+                            }
                         }
                     }
-                    Divider()
-                    ForEach(store.customLabels.filter { thread.labelIds.contains($0.id) }) { label in
-                        Button("Remove \(label.name)") {
-                            store.remove(label: label, from: thread)
+                    if let thread = thread {
+                        Divider()
+                        ForEach(store.customLabels.filter { thread.labelIds.contains($0.id) }) { label in
+                            Button("Remove \(label.name)") {
+                                store.remove(label: label, from: thread)
+                            }
                         }
                     }
                 } label: {

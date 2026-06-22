@@ -67,6 +67,47 @@ struct GmailAttachment: Identifiable, Codable, Hashable {
     var localFileURL: URL?
 }
 
+struct GmailProfile: Decodable {
+    let emailAddress: String
+    let messagesTotal: Int
+    let threadsTotal: Int
+    let historyId: String
+}
+
+struct GmailHistoryResponse: Decodable {
+    let history: [GmailHistoryRecord]?
+    let nextPageToken: String?
+    let historyId: String
+}
+
+struct GmailHistoryRecord: Decodable {
+    let id: String
+    let messages: [HistoryMessage]?
+    let messagesAdded: [HistoryMessageAdded]?
+    let messagesDeleted: [HistoryMessageDeleted]?
+    let labelsAdded: [HistoryLabelAdded]?
+    let labelsRemoved: [HistoryLabelRemoved]?
+
+    struct HistoryMessage: Decodable {
+        let id: String
+        let threadId: String
+    }
+    struct HistoryMessageAdded: Decodable {
+        let message: HistoryMessage
+    }
+    struct HistoryMessageDeleted: Decodable {
+        let message: HistoryMessage
+    }
+    struct HistoryLabelAdded: Decodable {
+        let message: HistoryMessage
+        let labelIds: [String]
+    }
+    struct HistoryLabelRemoved: Decodable {
+        let message: HistoryMessage
+        let labelIds: [String]
+    }
+}
+
 struct GmailDraft: Identifiable, Codable, Hashable {
     let id: String
     var accountId: String

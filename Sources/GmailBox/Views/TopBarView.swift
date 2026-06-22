@@ -18,54 +18,58 @@ struct TopBarView: View {
             .help("Toggle Sidebar")
 
             Spacer()
-                .frame(width: 140)
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search mail", text: $store.searchText)
-                    .textFieldStyle(.plain)
-                    .onSubmit {
-                        Task { await store.refresh() }
+            if store.isSyncing {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    if store.syncProgressTotal > 0 {
+                        let percent = min(100, Int((Double(store.syncProgressCount) / Double(store.syncProgressTotal)) * 100))
+                        Text(store.syncProgressCount > 0 ? "Downloading \(percent)%" : "Syncing...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                            .animation(.default, value: percent)
+                    } else {
+                        Text(store.syncProgressCount > 0 ? "Downloading \(store.syncProgressCount)" : "Syncing...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                            .animation(.default, value: store.syncProgressCount)
                     }
-                if !store.searchText.isEmpty {
-                    Button {
-                        store.searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
                 }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-            .frame(maxWidth: 680)
+                .padding(.trailing, 8)
+            } else {
+                Button {
+                    Task { await store.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh")
 
-            Button {
-                Task { await store.refresh() }
-            } label: {
-                Image(systemName: store.isSyncing ? "arrow.triangle.2.circlepath.circle" : "arrow.clockwise")
+                Button {
+                    Task { await store.syncAllOldMessages() }
+                } label: {
+                    Label("Sync all", systemImage: "tray.and.arrow.down")
+                }
+                .help("Sync all old messages for the selected account")
             }
-            .help("Refresh")
-            .disabled(store.isSyncing)
-
-            Button {
-                Task { await store.syncAllOldMessages() }
-            } label: {
-                Label("Sync all", systemImage: "tray.and.arrow.down")
-            }
-            .help("Sync all old messages for the selected account")
-            .disabled(store.isSyncing)
 
             Picker("Account", selection: Binding(
                 get: { store.selectedAccountId ?? "" },
-                set: { store.switchAccount(to: $0) }
+                set: { id in
+                    if id == "ADD_ACCOUNT" {
+                        store.signInWithGoogle()
+                    } else {
+                        store.switchAccount(to: id)
+                    }
+                }
             )) {
                 ForEach(store.accounts) { account in
                     Text(account.email).tag(account.id)
                 }
+                Divider()
+                Text("Add Account...").tag("ADD_ACCOUNT")
             }
             .frame(width: 220)
 

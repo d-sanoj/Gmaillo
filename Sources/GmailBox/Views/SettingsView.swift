@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingCreateLabel = false
     @State private var newLabelName = ""
+    @AppStorage("defaultAccountId") private var defaultAccountId: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +29,12 @@ struct SettingsView: View {
             Form {
             Section("General Settings") {
                 Toggle("Show labels on messages", isOn: $store.showLabelsOnMessages)
+                Picker("Startup Account", selection: $defaultAccountId) {
+                    Text("Last Used").tag("")
+                    ForEach(store.accounts) { account in
+                        Text(account.email).tag(account.id)
+                    }
+                }
             }
 
             Section("Labels") {
@@ -41,30 +48,33 @@ struct SettingsView: View {
                 GmailSystemLabel.sent, GmailSystemLabel.snoozed, GmailSystemLabel.scheduled,
                 GmailSystemLabel.drafts, GmailSystemLabel.allMail, GmailSystemLabel.spam, GmailSystemLabel.trash
             ]
-            let visibleSystemLabels = store.systemLabels
-                .filter { displayableSystemLabelIds.contains($0.id) }
-                .sorted {
-                    let idx1 = displayableSystemLabelIds.firstIndex(of: $0.id) ?? 0
-                    let idx2 = displayableSystemLabelIds.firstIndex(of: $1.id) ?? 0
-                    return idx1 < idx2
-                }
-            
-            if !visibleSystemLabels.isEmpty {
-                Section("System Labels") {
-                    ForEach(visibleSystemLabels) { label in
-                        Toggle(label.name.capitalized, isOn: Binding(
-                            get: { !store.hiddenLabelIds.contains(label.id) },
-                            set: { isVisible in
-                                var hidden = store.hiddenLabelIds
-                                if isVisible {
-                                    hidden.remove(label.id)
-                                } else {
-                                    hidden.insert(label.id)
-                                }
-                                store.hiddenLabelIds = hidden
+            let systemLabelNames: [String: String] = [
+                GmailSystemLabel.inbox: "Inbox",
+                GmailSystemLabel.starred: "Starred",
+                GmailSystemLabel.important: "Important",
+                GmailSystemLabel.sent: "Sent",
+                GmailSystemLabel.snoozed: "Snoozed",
+                GmailSystemLabel.scheduled: "Scheduled",
+                GmailSystemLabel.drafts: "Drafts",
+                GmailSystemLabel.allMail: "All Mail",
+                GmailSystemLabel.spam: "Spam",
+                GmailSystemLabel.trash: "Trash"
+            ]
+
+            Section("System Labels") {
+                ForEach(displayableSystemLabelIds, id: \.self) { labelId in
+                    Toggle(systemLabelNames[labelId] ?? labelId, isOn: Binding(
+                        get: { !store.hiddenLabelIds.contains(labelId) },
+                        set: { isVisible in
+                            var hidden = store.hiddenLabelIds
+                            if isVisible {
+                                hidden.remove(labelId)
+                            } else {
+                                hidden.insert(labelId)
                             }
-                        ))
-                    }
+                            store.hiddenLabelIds = hidden
+                        }
+                    ))
                 }
             }
 

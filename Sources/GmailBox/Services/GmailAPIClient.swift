@@ -8,6 +8,39 @@ final class GmailAPIClient {
         self.session = session
     }
 
+    func profile(accessToken: String) async throws -> GmailProfile {
+        let data = try await send(path: "profile", accessToken: accessToken)
+        return try JSONDecoder().decode(GmailProfile.self, from: data)
+    }
+
+    func history(accessToken: String, startHistoryId: String) async throws -> [GmailHistoryRecord] {
+        var allRecords: [GmailHistoryRecord] = []
+        var pageToken: String?
+        
+        repeat {
+            var queryItems = [URLQueryItem(name: "startHistoryId", value: startHistoryId)]
+            if let pageToken {
+                queryItems.append(URLQueryItem(name: "pageToken", value: pageToken))
+            }
+            
+            let data = try await send(path: "history", queryItems: queryItems, accessToken: accessToken)
+            let response = try JSONDecoder().decode(GmailHistoryResponse.self, from: data)
+            if let records = response.history {
+                allRecords.append(contentsOf: records)
+            }
+            pageToken = response.nextPageToken
+        } while pageToken != nil
+        
+        return allRecords
+    }
+
+    func hydrateSpecificThreads(_ threadIds: [String], accessToken: String, progress: ((Int) -> Void)? = nil) async throws -> [GmailThread] {
+        let emptyThreads = threadIds.map { 
+            GmailThread(id: $0, accountId: "", snippet: "", subject: "", senderDisplay: "", lastMessageDate: Date(), labelIds: [], isUnread: false, isStarred: false, hasAttachments: false)
+        }
+        return try await hydrateThreadSummaries(emptyThreads, accessToken: accessToken, progress: progress)
+    }
+
     func labels(accessToken: String) async throws -> [GmailLabel] {
         let data = try await send(path: "labels", accessToken: accessToken)
         struct Response: Decodable {
@@ -65,45 +98,48 @@ final class GmailAPIClient {
         _ = try await send(path: "labels/\(labelId)", method: "DELETE", accessToken: accessToken)
     }
 
-    func threads(accessToken: String, query: String?, labelId: String?, maxResults: Int = 50, includeSpamTrash: Bool = false) async throws -> [GmailThread] {
+    func threads(accessToken: String, query: String?, labelId: String?, maxResults: Int = 50, includeSpamTrash: Bool = false, progress: ((Int) -> Void)? = nil) async throws -> [GmailThread] {
         let page = try await threadPage(accessToken: accessToken, query: query, labelId: labelId, maxResults: maxResults, pageToken: nil, includeSpamTrash: includeSpamTrash)
-        return try await hydrateThreadSummaries(page.threads, accessToken: accessToken)
+        return try await hydrateThreadSummaries(page.threads, accessToken: accessToken, progress: progress)
     }
 
-    func allThreads(accessToken: String, query: String? = nil, labelId: String? = nil, pageSize: Int = 100, includeSpamTrash: Bool = false) async throws -> [GmailThread] {
+    func allThreads(accessToken: String, query: String? = nil, labelId: String? = nil, pageSize: Int = 100, includeSpamTrash: Bool = false, progress: ((Int) -> Void)? = nil) async throws -> [GmailThread] {
         var allThreads: [GmailThread] = []
         var pageToken: String?
 
         repeat {
             let page = try await threadPage(accessToken: accessToken, query: query, labelId: labelId, maxResults: pageSize, pageToken: pageToken, includeSpamTrash: includeSpamTrash)
-            allThreads.append(contentsOf: try await hydrateThreadSummaries(page.threads, accessToken: accessToken))
+            allThreads.append(contentsOf: try await hydrateThreadSummaries(page.threads, accessToken: accessToken, progress: progress))
             pageToken = page.nextPageToken
         } while pageToken != nil
 
         return allThreads
     }
 
-    private func hydrateThreadSummaries(_ threads: [GmailThread], accessToken: String) async throws -> [GmailThread] {
+    private func hydrateThreadSummaries(_ threads: [GmailThread], accessToken: String, progress: ((Int) -> Void)? = nil) async throws -> [GmailThread] {
         var hydrated: [GmailThread] = []
         var index = threads.startIndex
 
         while index < threads.endIndex {
             let end = threads.index(index, offsetBy: 10, limitedBy: threads.endIndex) ?? threads.endIndex
             let batch = Array(threads[index..<end])
-            let hydratedBatch = try await withThrowingTaskGroup(of: GmailThread.self) { group in
+            let hydratedBatch = try await withThrowingTaskGroup(of: GmailThread?.self) { group in
                 for thread in batch {
                     group.addTask {
-                        try await self.threadSummary(for: thread.id, fallback: thread, accessToken: accessToken)
+                        try? await self.threadSummary(for: thread.id, fallback: thread, accessToken: accessToken)
                     }
                 }
 
                 var values: [GmailThread] = []
                 for try await value in group {
-                    values.append(value)
+                    if let value {
+                        values.append(value)
+                    }
                 }
                 return values
             }
             hydrated.append(contentsOf: hydratedBatch)
+            progress?(hydratedBatch.count)
             index = end
         }
 
@@ -111,10 +147,7 @@ final class GmailAPIClient {
     }
 
     private func threadSummary(for threadId: String, fallback: GmailThread, accessToken: String) async throws -> GmailThread {
-        var queryItems = [URLQueryItem(name: "format", value: "metadata")]
-        ["From", "Subject", "Date"].forEach {
-            queryItems.append(URLQueryItem(name: "metadataHeaders", value: $0))
-        }
+        let queryItems = [URLQueryItem(name: "format", value: "full")]
 
         let data = try await send(path: "threads/\(threadId)", queryItems: queryItems, accessToken: accessToken)
         let decoded = try JSONDecoder().decode(GmailThreadResponse.self, from: data)
@@ -422,11 +455,16 @@ private struct GmailMessagePart: Decodable {
 
         let lowercasedFilename = filename.lowercased()
         let contentDisposition = header("Content-Disposition")?.lowercased() ?? ""
-        let contentID = header("Content-ID") ?? header("Content-Id") ?? header("X-Attachment-Id")
+        let contentID = header("Content-ID") ?? header("Content-Id")
 
-        if contentID != nil || contentDisposition.contains("inline") {
+        // If it has a Content-ID, it's explicitly meant for inline CID embedding.
+        if contentID != nil {
             return false
         }
+        
+        // Some clients send images as inline without CID but reference them via URL.
+        // If it's explicitly marked inline AND it's an image, we might want to filter it,
+        // but let's just rely on the image size heuristics below for inline images without CIDs.
 
         if (mimeType?.hasPrefix("image/") ?? false) {
             let size = body?.size ?? 0

@@ -14,7 +14,7 @@ struct GmailBoxApp: App {
     @StateObject private var store = MailStore()
 
     var body: some Scene {
-        WindowGroup("GmailBox") {
+        WindowGroup("Gmaillo") {
             ContentView(store: store)
                 .frame(minWidth: 1100, minHeight: 720)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -37,12 +37,12 @@ struct GmailBoxApp: App {
                 Divider()
 
                 Button("Archive") {
-                    store.archiveSelectedThread()
+                    store.archiveSelectedThreads()
                 }
                 .keyboardShortcut("e", modifiers: [.command])
 
                 Button("Mark Read/Unread") {
-                    store.toggleUnreadSelectedThread()
+                    store.toggleUnreadSelectedThreads()
                 }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
             }

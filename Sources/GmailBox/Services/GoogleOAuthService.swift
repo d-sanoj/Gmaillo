@@ -64,7 +64,7 @@ final class GoogleOAuthService {
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "scope", value: scopes.joined(separator: " ")),
             URLQueryItem(name: "access_type", value: "offline"),
-            URLQueryItem(name: "prompt", value: "consent"),
+            URLQueryItem(name: "prompt", value: "select_account consent"),
             URLQueryItem(name: "state", value: state)
         ]
         guard let authURL = components?.url else {
